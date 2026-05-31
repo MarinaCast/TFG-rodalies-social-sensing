@@ -18,13 +18,15 @@ import plotly.graph_objects as go
 import pydeck as pdk
 import json
 
-DATA_START = "2025-01-01"
+DATA_START = "2025-08-01"
+CAL_MIN    = datetime.date(2025, 8, 1)
+CAL_MAX    = datetime.date(2026, 6, 30)
 
 LINE_COLORS = {
     "R1": "#87CEEB", "R2": "#4CAF50", "R2N": "#90EE90", "R2S": "#006400",
     "R3": "#DC143C", "R4": "#00008B", "R7": "#8B008B", "R8": "#FF69B4",
 }
-CARACTER_COLORS = {"informatiu": "#3B82F6", "queixa": "#DC143C", "mixt": "#F59E0B"}
+CARACTER_COLORS = {"informatiu": "#3B82F6", "queixa": "#DC143C", "indefinit": "#F59E0B"}
 TIPO_COLORS = {
     "demora": "#F59E0B", "averia": "#DC143C", "obras": "#6366F1",
     "parada": "#10B981", "arrollamiento": "#7C3AED", "huelga": "#EC4899",
@@ -34,9 +36,10 @@ DEFAULT_COLOR = "#6B7280"
 ALL_TIPOS = ["demora", "averia", "obras", "parada", "arrollamiento", "huelga"]
 
 PATHS = {
-    "csv":     r"C:\MARINA\Universitat\TFG - Visualització\Fonts\classificacio_estacions_ubicacions.csv",
-    "json":    r"C:\MARINA\Universitat\TFG - Visualització\Fonts\stations_info.json",
-    "csv_inc": r"C:\MARINA\Universitat\TFG - Visualització\Fonts\tweets_incidencias_final_juny.csv",
+    "csv":        r"C:\MARINA\Universitat\TFG - Visualització\Fonts\classificacio_estacions_ubicacions.csv",
+    "json":       r"C:\MARINA\Universitat\TFG - Visualització\Fonts\stations_info.json",
+    "csv_inc":    r"C:\MARINA\Universitat\TFG - Visualització\Fonts\tweets_incidencias.csv",
+    "csv_master": r"C:\MARINA\Universitat\TFG - Visualització\Fonts\tweets_merged.csv",
 }
 
 _LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" width="52" height="52" viewBox="0 0 24 24"
@@ -91,7 +94,7 @@ def load_tweets(file_mtime):
     df["hour"]  = df["timestamp"].dt.hour
     df["lines_list"]    = df["lines_list"].fillna("")
     df["stations_list"] = df["stations_list"].fillna("")
-    df["caracter"]      = df["caracter"].fillna("indeterminat")
+    df["caracter"] = df["caracter"].fillna("indefinit").replace({"mixt": "indefinit"})
     return df[df["date"] >= DATA_START].reset_index(drop=True)
 
 
@@ -144,6 +147,15 @@ def load_incidents(_file_mtime_inc):
     return df_i[df_i["date"] >= DATA_START].reset_index(drop=True)
 
 
+@st.cache_data
+def load_master(_mtime_m):
+    dm = pd.read_csv(PATHS["csv_master"], encoding="utf-8", low_memory=False)
+    dm["datetime"] = pd.to_datetime(
+        dm["date"].astype(str) + " " + dm["hora"].astype(str), errors="coerce"
+    )
+    return dm
+
+
 # ── Carrega inicial ────────────────────────────────────────────────────────────
 _mtime     = os.path.getmtime(PATHS["csv"])
 _mtime_inc = os.path.getmtime(PATHS["csv_inc"])
@@ -156,6 +168,8 @@ df_exp = build_expanded(
     json.dumps(station_lookup),
     _mtime,
 )
+
+df_master  = load_master(os.path.getmtime(PATHS["csv_master"]))
 
 ALL_LINES     = sorted(LINE_COLORS.keys())
 ALL_IDIOMES   = sorted(df["idioma"].dropna().unique())
@@ -404,7 +418,8 @@ with st.sidebar:
     page = st.radio(
         "Pagina",
         ["Inici", "Mapa geografic", "Analisi temporal",
-         "Analisi per linies", "Analisi d'incidencies"],
+         "Analisi per linies", "Analisi d'incidencies",
+         "Incidencies per linia", "20 Gen — Cas d'Estudi"],
         label_visibility="collapsed",
         key="nav_page",
     )
@@ -424,12 +439,27 @@ with st.sidebar:
     fil_caracters = st.pills("Caracter", ALL_CARACTERS, selection_mode="multi",
                               default=list(ALL_CARACTERS), key="fil_caracters")
 
-    fil_dates = st.date_input(
-        "Periode de temps",
-        value=(ALL_DATES_DT[0], ALL_DATES_DT[-1]),
-        min_value=ALL_DATES_DT[0], max_value=ALL_DATES_DT[-1],
-        key="fil_dates",
-    )
+    rb_col, date_col = st.columns([1, 5])
+    with rb_col:
+        st.markdown(
+            "<div style='margin-top:28px'></div>"
+            "<style>[data-testid='stSidebar'] [data-testid='stButton']:last-of-type button {"
+            "display:flex !important;align-items:center !important;"
+            "justify-content:center !important;font-size:18px !important;"
+            "padding:0 !important;height:38px !important;}</style>",
+            unsafe_allow_html=True,
+        )
+        if st.button("↺", key="reset_dates", help="Restablir al periode complet",
+                     use_container_width=True):
+            st.session_state["fil_dates"] = (CAL_MIN, CAL_MAX)
+    with date_col:
+        fil_dates = st.date_input(
+            "Periode de temps",
+            value=st.session_state.get("fil_dates", (CAL_MIN, CAL_MAX)),
+            min_value=CAL_MIN,
+            max_value=CAL_MAX,
+            key="fil_dates",
+        )
     # Normalitzar: pot retornar (start, end), (start,) o date
     if isinstance(fil_dates, (list, tuple)) and len(fil_dates) == 2:
         date_start_str, date_end_str = str(fil_dates[0]), str(fil_dates[1])
@@ -589,27 +619,30 @@ elif page == "Mapa geografic":
         )
 
     # ── Filtre d'etiquetes (fora de columnes per alinear llegenda amb mapa) ───────
-    label_mode = st.radio(
-        "Mostrar etiquetes als mapes",
-        ["Totes les estacions", "Top N estacions", "Codi de linia"],
-        horizontal=True, key="label_mode",
-    )
-    top_n = 10
-    if label_mode == "Top N estacions":
-        top_n = st.number_input(
-            "Nombre d'estacions (les N amb mes tweets)", min_value=1,
-            max_value=50, value=10, step=1, key="top_n_val",
+    lc1, lc2 = st.columns([2, 1])
+    with lc1:
+        label_mode = st.radio(
+            "Etiquetes estacions",
+            ["Noms complets", "Codi de linia"],
+            horizontal=True, key="label_mode",
         )
-    if label_mode == "Totes les estacions":
-        labeled_ids = set(station_agg["station"])
-        label_map   = {r["station"]: r["station"] for _, r in station_agg.iterrows()}
-    elif label_mode == "Top N estacions":
-        top_rows    = station_agg.nlargest(int(top_n), "n_tweets")
+    with lc2:
+        use_top_n_map = st.toggle("Limitar a Top N", value=False, key="topn_map_toggle")
+    top_n_map = 10
+    if use_top_n_map:
+        top_n_map = st.number_input(
+            "N estacions (per tweets)", min_value=1,
+            max_value=50, value=10, step=1, key="top_n_map_val",
+        )
+    if use_top_n_map:
+        top_rows    = station_agg.nlargest(int(top_n_map), "n_tweets")
         labeled_ids = set(top_rows["station"])
-        label_map   = {r["station"]: r["station"] for _, r in top_rows.iterrows()}
+        label_map   = {r["station"]: (r["station"] if label_mode == "Noms complets" else r["line"])
+                       for _, r in top_rows.iterrows()}
     else:
         labeled_ids = set(station_agg["station"])
-        label_map   = {r["station"]: r["line"] for _, r in station_agg.iterrows()}
+        label_map   = {r["station"]: (r["station"] if label_mode == "Noms complets" else r["line"])
+                       for _, r in station_agg.iterrows()}
 
     # ── MAP 1: Punts (amplada completa) ──────────────────────────────────────
     st.markdown(
@@ -898,29 +931,89 @@ elif page == "Analisi temporal":
 
     st.title("Analisi temporal")
 
-    df_t = apply_filters(df, fil_lines, fil_idiomes, fil_caracters,
-                         date_start_str, date_end_str, use_lines_list=True)
+    tc1, tc2 = st.columns([3, 1])
+    with tc1:
+        top_n_enabled_t = st.toggle("Filtrar per Top N dies més actius",
+                                     value=False, key="topn_enabled_temporal")
+    top_n_t = 10
+    if top_n_enabled_t:
+        with tc2:
+            top_n_t = st.number_input("N dies", min_value=3, max_value=60,
+                                       value=10, step=1, key="topn_val_temporal")
+
+    # df_t_base = tot el rang sense Top N (per a hora i comparativa mensual)
+    df_t_base = apply_filters(df, fil_lines, fil_idiomes, fil_caracters,
+                               date_start_str, date_end_str, use_lines_list=True)
+    if top_n_enabled_t and len(df_t_base) > 0:
+        top_dates_t = df_t_base.groupby("date").size().nlargest(int(top_n_t)).index
+        df_t = df_t_base[df_t_base["date"].isin(top_dates_t)]
+    else:
+        df_t = df_t_base
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Tweets filtrats",     f"{len(df_t):,}")
     m2.metric("Dies amb activitat",  df_t["date"].nunique())
-    m3.metric("Mesos amb activitat", df_t["month"].nunique())
+    m3.metric("Mesos amb activitat", df_t_base["month"].nunique())
     m4.metric("Tweets totals",       f"{len(df):,}")
+    st.divider()
+
+    # ── Donut distribució per caràcter ────────────────────────────────────────
+    st.subheader("Distribució per tipus de tweet")
+    if len(df_t) > 0:
+        car_counts = df_t["caracter"].value_counts().reset_index()
+        car_counts.columns = ["caracter", "n"]
+        fig_donut = go.Figure(go.Pie(
+            labels=car_counts["caracter"],
+            values=car_counts["n"],
+            hole=0.55,
+            marker=dict(colors=[CARACTER_COLORS.get(c, DEFAULT_COLOR)
+                                 for c in car_counts["caracter"]]),
+            textinfo="label+percent",
+            hovertemplate="%{label}: %{value} tweets (%{percent})<extra></extra>",
+        ))
+        fig_donut.update_layout(
+            height=320,
+            margin=dict(t=20, b=60),
+            showlegend=True,
+            legend=dict(orientation="h", yanchor="top", y=-0.05),
+            annotations=[dict(text=f"{len(df_t):,}<br><span style='font-size:11px'>tweets</span>",
+                              x=0.5, y=0.5, font_size=16, showarrow=False,
+                              font_color="#f1f5f9")],
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#94a3b8"),
+        )
+        st.plotly_chart(fig_donut, use_container_width=True)
+
+        # Cards de tweets de mostra (un per caracter, ordenats per tipus)
+        n_show = min(int(top_n_t) if top_n_enabled_t else 6, len(df_t))
+        sample = (df_t[["tweet_text", "caracter", "date"]]
+                  .dropna(subset=["tweet_text"])
+                  .sort_values("caracter")
+                  .head(n_show))
+        for _, r in sample.iterrows():
+            col_c = CARACTER_COLORS.get(str(r["caracter"]), DEFAULT_COLOR)
+            st.markdown(
+                f"<div style='padding:8px 14px;margin-bottom:5px;background:#0f172a;"
+                f"border-radius:6px;border-left:3px solid {col_c}'>"
+                f"<span style='font-size:10px;color:{col_c};font-weight:700;"
+                f"text-transform:uppercase'>{r['caracter']}</span> "
+                f"<span style='font-size:10px;color:#64748b'>{r['date']}</span><br>"
+                f"<span style='font-size:12px;color:#cbd5e1'>{str(r['tweet_text'])[:200]}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
     st.divider()
 
     # ── Grafic diari ──────────────────────────────────────────────────────────
     st.subheader("Volum diari de tweets")
-    months_available = ["Tots els mesos"] + sorted(df_t["month"].dropna().unique().tolist())
-    sel_month = st.selectbox("Mes a visualitzar", options=months_available,
-                             index=0, key="sel_month_daily")
 
     if len(df_t) > 0:
-        df_daily_src = (df_t[df_t["month"] == sel_month]
-                        if sel_month != "Tots els mesos" else df_t)
-        daily     = df_daily_src.groupby("date").size().reset_index(name="n_tweets")
+        daily = df_t_base.groupby("date").size().reset_index(name="n_tweets")
         daily["date"] = pd.to_datetime(daily["date"])
-        daily     = daily.sort_values("date")
-        top3_days = daily.nlargest(3, "n_tweets")
+        daily = daily.sort_values("date")
+        n_top_chart = min(int(top_n_t), len(daily)) if top_n_enabled_t else 3
+        top_n_days_chart = daily.nlargest(n_top_chart, "n_tweets")
 
         fig_d = go.Figure()
         fig_d.add_trace(go.Scatter(
@@ -929,36 +1022,65 @@ elif page == "Analisi temporal":
             line=dict(color="#1E40AF", width=2), marker=dict(size=5),
         ))
         fig_d.add_trace(go.Scatter(
-            x=top3_days["date"], y=top3_days["n_tweets"],
-            mode="markers+text", name="Top 3 dies",
+            x=top_n_days_chart["date"], y=top_n_days_chart["n_tweets"],
+            mode="markers+text", name=f"Top {n_top_chart} dies",
             marker=dict(size=14, color="#DC143C", symbol="star"),
-            text=[f"#{i+1}: {n}" for i, n in enumerate(top3_days["n_tweets"])],
+            text=[f"#{i+1}: {n}" for i, n in enumerate(top_n_days_chart["n_tweets"])],
             textposition="top center",
         ))
-        scope = f"— {sel_month}" if sel_month != "Tots els mesos" else ""
         fig_d.update_layout(
-            title=f"Tweets per dia {scope}", xaxis_title="Data", yaxis_title="Tweets",
+            title="Tweets per dia", xaxis_title="Data", yaxis_title="Tweets",
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02), height=360,
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#94a3b8"),
         )
         st.plotly_chart(fig_d, use_container_width=True)
 
-        top3_show = top3_days.copy()
-        top3_show["date"] = top3_show["date"].dt.strftime("%d/%m/%Y")
-        st.markdown("**Top 3 dies del periode seleccionat:**")
-        st.dataframe(top3_show.rename(columns={"date": "Data", "n_tweets": "Tweets"}),
-                     use_container_width=True, hide_index=True)
+        # Cards top N dies amb textos
+        n_taula = int(top_n_t) if top_n_enabled_t else 10
+        top_days_tbl = (df_t.groupby("date").size()
+                        .nlargest(n_taula).reset_index(name="n_tweets")
+                        .sort_values("n_tweets", ascending=False))
+        top_days_tbl["Data"] = pd.to_datetime(top_days_tbl["date"]).dt.strftime("%d/%m/%Y")
+
+        st.markdown(f"**Top {n_taula} dies amb més activitat:**")
+        for _, row in top_days_tbl.iterrows():
+            tweets_list = (df_t[df_t["date"] == row["date"]]["tweet_text"]
+                           .dropna().head(3).tolist())
+            tweets_html = "".join(
+                f"<div style='font-size:12px;color:#cbd5e1;padding:5px 0;"
+                f"border-top:1px solid #1e293b;line-height:1.5'>{str(t)[:220]}</div>"
+                for t in tweets_list
+            )
+            st.markdown(
+                f"<div style='background:#0f172a;border:1px solid #1e293b;border-radius:8px;"
+                f"padding:12px 16px;margin-bottom:8px'>"
+                f"<div style='display:flex;gap:16px;align-items:baseline;margin-bottom:6px'>"
+                f"<span style='font-size:14px;font-weight:700;color:#f1f5f9'>{row['Data']}</span>"
+                f"<span style='font-size:12px;color:#7dd3fc;font-weight:600'>"
+                f"{row['n_tweets']} tweets</span></div>"
+                f"{tweets_html}</div>",
+                unsafe_allow_html=True,
+            )
     else:
         st.info("No hi ha dades per als filtres seleccionats.")
 
     st.divider()
 
     # ── Comparativa mensual ───────────────────────────────────────────────────
-    st.subheader("Comparativa mensual (top 3 en vermell)")
-    if len(df_t) > 0:
-        monthly     = df_t.groupby("month").size().reset_index(name="n_tweets").sort_values("month")
-        top3_months = set(monthly.nlargest(3, "n_tweets")["month"])
-        bar_colors  = ["#DC143C" if m in top3_months else "#3B82F6" for m in monthly["month"]]
+    # Sempre tots els mesos de df_t_base; vermell = top N si activat, else top 3
+    top_label = int(top_n_t) if top_n_enabled_t else 3
+    st.subheader(f"Comparativa mensual (top {top_label} en vermell)")
+    if len(df_t_base) > 0:
+        monthly = (df_t_base.groupby("month").size()
+                   .reset_index(name="n_tweets").sort_values("month"))
+        if top_n_enabled_t:
+            top_months = set(df_t["month"].unique())
+        else:
+            top_months = set(monthly.nlargest(3, "n_tweets")["month"])
+        bar_colors = ["#DC143C" if m in top_months else "#3B82F6"
+                      for m in monthly["month"]]
         fig_m = go.Figure(go.Bar(
             x=monthly["month"], y=monthly["n_tweets"],
             marker_color=bar_colors,
@@ -966,21 +1088,21 @@ elif page == "Analisi temporal":
         ))
         fig_m.update_layout(
             xaxis_title="Mes", yaxis_title="Tweets", height=350,
-            annotations=[dict(x=0.99, y=0.99, xref="paper", yref="paper",
-                              text="Vermell = top 3 mesos   Blau = resta",
-                              showarrow=False, font=dict(size=11),
-                              bgcolor="white", bordercolor="#ccc", borderwidth=1)],
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#94a3b8"),
         )
         st.plotly_chart(fig_m, use_container_width=True)
 
     st.divider()
 
-    # ── Hora del dia per caracter ─────────────────────────────────────────────
-    st.subheader("Activitat per hora del dia per caracter")
-    st.caption("Distribucio de tweets per hora i tipus")
-    if len(df_t) > 0:
-        cartypes   = df_t["caracter"].unique()
-        hourly_car = df_t.groupby(["hour", "caracter"]).size().reset_index(name="n")
+    # ── Hora del dia per caracter (usa df_t_base, no afectat per Top N) ───────
+    st.subheader("Distribució de tweets per hora segons tipologia")
+    d_ini = date_start_str.replace("-", "/") if date_start_str else ""
+    d_fi  = date_end_str.replace("-", "/") if date_end_str else ""
+    st.caption(f"Distribució de tweets per hora i tipus — {d_ini} – {d_fi}")
+    if len(df_t_base) > 0:
+        cartypes   = df_t_base["caracter"].unique()
+        hourly_car = df_t_base.groupby(["hour", "caracter"]).size().reset_index(name="n")
         full_idx   = pd.MultiIndex.from_product([range(24), cartypes],
                                                 names=["hour", "caracter"])
         hourly_car = (hourly_car.set_index(["hour", "caracter"])
@@ -988,37 +1110,24 @@ elif page == "Analisi temporal":
         fig_h = px.bar(hourly_car, x="hour", y="n", color="caracter",
                        barmode="stack", color_discrete_map=CARACTER_COLORS,
                        labels={"hour": "Hora del dia", "n": "Tweets", "caracter": "Caracter"})
+        # Línia de tendència: total per hora
+        hourly_total = hourly_car.groupby("hour")["n"].sum().reset_index()
+        fig_h.add_trace(go.Scatter(
+            x=hourly_total["hour"], y=hourly_total["n"],
+            mode="lines+markers",
+            name="Total",
+            line=dict(color="#f8fafc", width=2.5, dash="solid"),
+            marker=dict(size=5, color="#f8fafc"),
+            hovertemplate="Hora %{x}: %{y} tweets total<extra></extra>",
+        ))
         fig_h.update_layout(
-            xaxis=dict(tickmode="linear", tick0=0, dtick=1), height=340,
+            xaxis=dict(tickmode="linear", tick0=0, dtick=1), height=380,
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#94a3b8"),
         )
         st.plotly_chart(fig_h, use_container_width=True)
 
-    st.divider()
-
-    # ── Top 10 dies ───────────────────────────────────────────────────────────
-    st.subheader("Top 10 dies amb mes activitat")
-    if len(df_t) > 0:
-        top10 = (
-            df_t.groupby("date")
-            .agg(
-                n_tweets  =("tweet_id", "count"),
-                car_pred  =("caracter", caracter_predominant),
-                estacions =("stations_list", lambda x: ", ".join(
-                    sorted({s for v in x if v for s in str(v).split("|") if s})[:4]
-                )),
-            )
-            .reset_index()
-            .sort_values("n_tweets", ascending=False)
-            .head(10)
-        )
-        top10["date"] = pd.to_datetime(top10["date"]).dt.strftime("%d/%m/%Y")
-        st.dataframe(
-            top10.rename(columns={"date": "Data", "n_tweets": "Tweets",
-                                  "car_pred": "Caracter predominant",
-                                  "estacions": "Estacions principals"}),
-            use_container_width=True, hide_index=True,
-        )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1028,8 +1137,22 @@ elif page == "Analisi per linies":
 
     st.title("Analisi per linies")
 
+    lc1, lc2 = st.columns([3, 1])
+    with lc1:
+        top_n_enabled_l = st.toggle("Mostrar només Top N línies",
+                                     value=False, key="topn_enabled_linies")
+    top_n_l = 5
+    if top_n_enabled_l:
+        with lc2:
+            top_n_l = st.number_input("N línies", min_value=1, max_value=8,
+                                       value=5, step=1, key="topn_val_linies")
+
     df_l = apply_filters(df_exp, fil_lines, fil_idiomes, fil_caracters,
                          date_start_str, date_end_str)
+    if top_n_enabled_l and len(df_l) > 0:
+        top_lines_l = (df_l.groupby("line")["tweet_id"].nunique()
+                       .nlargest(int(top_n_l)).index)
+        df_l = df_l[df_l["line"].isin(top_lines_l)]
 
     st.subheader("Quines linies reben mes tweets?")
     if len(df_l) > 0:
@@ -1110,21 +1233,23 @@ elif page == "Analisi d'incidencies":
     st.caption("Els filtres de linia, idioma i caracter no s'apliquen a aquesta pagina "
                "(el CSV d'incidencies no te aquestes columnes). Si s'aplica el rang de dates.")
 
-    ic1, ic2, ic3 = st.columns(3)
+    ic1, ic2 = st.columns(2)
     with ic1:
         sel_tipos = st.pills("Tipus d'incident", options=ALL_TIPOS,
                              selection_mode="multi", default=ALL_TIPOS, key="inc_tipos")
     with ic2:
         conf_opts = ["Totes", "Alta (>= 0.88)", "Mitja (0.75 - 0.85)", "Baixa (<= 0.75)"]
         sel_conf  = st.selectbox("Confianca", conf_opts, index=0, key="inc_conf")
-    with ic3:
-        # Filtre de mes dins del rang de dates global
-        inc_months_filtered = [m for m in INC_MONTHS
-                               if (date_start_str or "0") <= m <= (date_end_str or "z")]
-        if not inc_months_filtered:
-            inc_months_filtered = INC_MONTHS
-        sel_mes = st.selectbox("Mes", inc_months_filtered,
-                               index=len(inc_months_filtered) - 1, key="inc_mes")
+
+    inc1, inc2 = st.columns([3, 1])
+    with inc1:
+        top_n_enabled_i = st.toggle("Filtrar per Top N dies amb més incidents",
+                                     value=False, key="topn_enabled_inc")
+    top_n_i = 10
+    if top_n_enabled_i:
+        with inc2:
+            top_n_i = st.number_input("N dies", min_value=3, max_value=60,
+                                       value=10, step=1, key="topn_val_inc")
     st.divider()
 
     # Aplicar filtres
@@ -1140,20 +1265,21 @@ elif page == "Analisi d'incidencies":
         df_i = df_i[df_i["confianza"].between(0.75, 0.85)]
     elif sel_conf == "Baixa (<= 0.75)":
         df_i = df_i[df_i["confianza"] <= 0.75]
-
-    df_mes_inc = df_i[df_i["month"] == sel_mes] if sel_mes else df_i.iloc[:0]
+    if top_n_enabled_i and len(df_i) > 0:
+        top_dates_i = df_i.groupby("date").size().nlargest(int(top_n_i)).index
+        df_i = df_i[df_i["date"].isin(top_dates_i)]
 
     mc1, mc2, mc3, mc4 = st.columns(4)
-    mc1.metric("Tweets incident (mes)", len(df_mes_inc))
-    mc2.metric("Dies amb activitat", df_mes_inc["date"].nunique())
+    mc1.metric("Tweets incident",    f"{len(df_i):,}")
+    mc2.metric("Dies amb activitat", df_i["date"].nunique())
     mc3.metric("Tipus mes frequent",
-               df_mes_inc["tipo_incidencia"].mode().iloc[0] if len(df_mes_inc) > 0 else "—")
-    mc4.metric("Total incidents (dataset)", len(df_i))
+               df_i["tipo_incidencia"].mode().iloc[0] if len(df_i) > 0 else "—")
+    mc4.metric("Mesos amb incidents", df_i["month"].nunique())
     st.divider()
 
-    st.subheader(f"Volum diari d'incidents — {sel_mes}")
-    if len(df_mes_inc) > 0:
-        daily_tipo = (df_mes_inc.groupby(["date", "tipo_incidencia"])
+    st.subheader("Volum diari d'incidents")
+    if len(df_i) > 0:
+        daily_tipo = (df_i.groupby(["date", "tipo_incidencia"])
                       .size().reset_index(name="n"))
         fig_inc = px.bar(
             daily_tipo, x="date", y="n", color="tipo_incidencia",
@@ -1166,11 +1292,11 @@ elif page == "Analisi d'incidencies":
         )
         st.plotly_chart(fig_inc, use_container_width=True)
     else:
-        st.info("Sense dades per al mes i filtres seleccionats.")
+        st.info("Sense dades per als filtres seleccionats.")
 
     st.divider()
 
-    st.subheader("Distribucio per tipus (periode complet)")
+    st.subheader("Distribucio per tipus")
     if len(df_i) > 0:
         tipo_total = (df_i.groupby("tipo_incidencia").size()
                       .reset_index(name="n").sort_values("n", ascending=True))
@@ -1189,7 +1315,428 @@ elif page == "Analisi d'incidencies":
         st.plotly_chart(fig_tipo, use_container_width=True)
 
     st.divider()
-    with st.expander("Veure tweets del mes seleccionat"):
+    with st.expander("Veure tweets del periode seleccionat"):
         cols_inc = ["date", "tweet_text", "tipo_incidencia", "confianza", "metodo"]
-        st.dataframe(df_mes_inc[cols_inc].sort_values("date", ascending=False),
+        st.dataframe(df_i[cols_inc].sort_values("date", ascending=False),
                      use_container_width=True, height=280)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGINA: INCIDENCIES PER LINIA
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "Incidencies per linia":
+
+    st.title("Incidències per línia")
+    st.markdown(
+        "<p style='color:#94a3b8;font-size:0.95rem;margin:-8px 0 20px;line-height:1.7'>"
+        "Selecciona una o més línies al sidebar per veure la distribució de tipus d'incident "
+        "detectats. Clica sobre una barra per veure els tweets d'aquell tipus."
+        "</p>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Filtre d'hora a la pàgina ──────────────────────────────────────────────
+    hf1, hf2 = st.columns([1, 3])
+    with hf1:
+        use_hour_f = st.toggle("Filtrar per hora", value=False, key="ipl_hour_toggle")
+    hour_from = 0
+    if use_hour_f:
+        with hf2:
+            hour_from = st.slider("Tweets a partir de l'hora",
+                                   min_value=0, max_value=23, value=7,
+                                   step=1, key="ipl_hour_val",
+                                   format="%dh")
+    st.divider()
+
+    # ── Preparar dades: unir incidents amb info de línia ──────────────────────
+    # Seleccionem només les columnes necessàries de cada dataset per evitar
+    # conflictes de noms (date, hour apareixen a tots dos)
+    df_inc_slim = (df_inc[df_inc["tipo_incidencia"].isin(ALL_TIPOS)]
+                   [["id", "tweet_text", "tipo_incidencia", "confianza"]].copy())
+    df_exp_slim = (df_exp[["tweet_id", "line", "station", "hour", "date"]]
+                   .drop_duplicates()
+                   .rename(columns={"tweet_id": "id"}))
+
+    df_merged = df_inc_slim.merge(df_exp_slim, on="id", how="inner")
+
+    # Aplicar filtres de data i hora
+    if date_start_str:
+        df_merged = df_merged[df_merged["date"] >= date_start_str]
+    if date_end_str:
+        df_merged = df_merged[df_merged["date"] <= date_end_str]
+    if use_hour_f:
+        df_merged = df_merged[df_merged["hour"] >= hour_from]
+
+    # Línies actives del sidebar
+    active_lines_ipl = fil_lines if fil_lines else ALL_LINES
+    df_merged = df_merged[df_merged["line"].isin(active_lines_ipl)]
+
+    if len(df_merged) == 0:
+        st.info("No hi ha incidents per als filtres seleccionats.")
+    else:
+        st.markdown(
+            f"<div style='font-size:13px;color:#64748b;margin-bottom:16px'>"
+            f"{len(df_merged):,} tweets d'incident · "
+            f"{df_merged['id'].nunique():,} únics · "
+            f"{'a partir de les ' + str(hour_from) + 'h' if use_hour_f else 'totes les hores'}"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        for line in active_lines_ipl:
+            df_line = df_merged[df_merged["line"] == line]
+            if len(df_line) == 0:
+                continue
+
+            lcolor = LINE_COLORS.get(line, DEFAULT_COLOR)
+            tipo_counts = (
+                df_line.groupby("tipo_incidencia").size()
+                .reset_index(name="n").sort_values("n", ascending=True)
+            )
+            tipo_counts["color"] = tipo_counts["tipo_incidencia"].map(TIPO_COLORS).fillna(DEFAULT_COLOR)
+
+            # Header de línia
+            st.markdown(
+                f"<div style='display:flex;align-items:center;gap:12px;margin:20px 0 8px;"
+                f"padding:10px 16px;background:linear-gradient(90deg,{lcolor}22 0%,transparent 100%);"
+                f"border-radius:8px;border-left:3px solid {lcolor}'>"
+                f"<span style='font-size:16px;font-weight:700;color:#f1f5f9'>Línia {line}</span>"
+                f"<span style='font-size:12px;color:#64748b'>{len(df_line):,} tweets d'incident</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+            fig_l = go.Figure(go.Bar(
+                x=tipo_counts["n"],
+                y=tipo_counts["tipo_incidencia"],
+                orientation="h",
+                marker_color=tipo_counts["color"].tolist(),
+                text=tipo_counts["n"],
+                textposition="outside",
+                hovertemplate="<b>%{y}</b>: %{x} tweets<extra></extra>",
+            ))
+            fig_l.update_layout(
+                height=max(180, len(tipo_counts) * 48 + 80),
+                margin=dict(l=120, r=80, t=10, b=10),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#94a3b8"),
+                xaxis=dict(showgrid=True, gridcolor="#1e293b"),
+                yaxis=dict(showgrid=False),
+            )
+
+            sel = st.plotly_chart(
+                fig_l, use_container_width=True,
+                on_select="rerun", key=f"ipl_chart_{line}",
+            )
+
+            # Mostrar tweets quan es clica una barra
+            tipo_sel = None
+            if sel and hasattr(sel, "selection") and sel.selection.points:
+                pt = sel.selection.points[0]
+                tipo_sel = pt.get("y") or pt.get("label")
+
+            if tipo_sel:
+                df_sel = df_line[df_line["tipo_incidencia"] == tipo_sel].sort_values("date", ascending=False)
+                tcolor = TIPO_COLORS.get(tipo_sel, DEFAULT_COLOR)
+                st.markdown(
+                    f"<div style='margin:8px 0 12px;padding:8px 16px;"
+                    f"background:{tcolor}18;border-radius:8px;border-left:3px solid {tcolor}'>"
+                    f"<span style='font-size:13px;font-weight:700;color:{tcolor}'>{tipo_sel}</span>"
+                    f" &nbsp;·&nbsp; <span style='color:#94a3b8;font-size:12px'>"
+                    f"{len(df_sel)} tweets · Línia {line}</span></div>",
+                    unsafe_allow_html=True,
+                )
+                for _, r in df_sel.head(25).iterrows():
+                    st.markdown(
+                        f"<div style='padding:8px 14px;margin-bottom:5px;background:#0f172a;"
+                        f"border-radius:6px;border-left:3px solid {tcolor}88'>"
+                        f"<span style='font-size:10px;color:#64748b'>"
+                        f"{r.get('date','')}"
+                        f"{' · ' + str(int(r['hour'])) + 'h' if pd.notna(r.get('hour')) else ''}"
+                        f" · confiança {r.get('confianza', ''):.2f}"
+                        f"</span><br>"
+                        f"<span style='font-size:12px;color:#cbd5e1;line-height:1.5'>"
+                        f"{str(r.get('tweet_text',''))[:300]}</span>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# PAGINA: 20 GENER — CAS D'ESTUDI
+# ══════════════════════════════════════════════════════════════════════════════
+elif page == "20 Gen — Cas d'Estudi":
+
+    DIA = "2026-01-20"
+
+    st.title("20 de Gener 2026 — Cas d'Estudi")
+    st.markdown(
+        "<p style='color:#94a3b8;font-size:0.95rem;margin:-8px 0 20px;line-height:1.7'>"
+        "El 20 de gener de 2026 va ser el dia amb més activitat del dataset: múltiples incidents "
+        "simultanis a R4, R11, R2 i R1 causats per un temporal. Aquesta pàgina analitza per cada "
+        "línia quins usuaris van detectar i comunicar els problemes <b>abans</b> que Rodalies "
+        "ho fes oficialment, i amb quant de temps d'avantatge."
+        "</p>",
+        unsafe_allow_html=True,
+    )
+
+    df_dia = df_master[df_master["date"] == DIA].copy()
+
+    # Comptes oficials: @rodalies exacte, @rod1cat..@rod11cat, @inforodali*, @emergencies*, mèdia
+    # Anclem al principi (@rodalies NO ha de coincidir amb @usuariarodalies)
+    OFICIALS_RE = (
+        r"^@rodalies$|^@rod\d+cat$|^@inforodali|^@emergenci|"
+        r"^@3catinfoviari|^@btvnoticies|^@elnacionalcat|^@adif|^@renfe|^@radiosabd"
+    )
+    es_oficial = df_dia["user"].str.lower().str.match(
+        r"@rodalies$|@rod\d+cat|@inforodali|@emergenci|"
+        r"@3catinfoviari|@btvnoticies|@elnacionalcat|@adif|@renfe|@radiosabd",
+        na=False,
+    )
+    df_usr = df_dia[~es_oficial].copy()
+    df_ofi = df_dia[es_oficial].copy()
+
+    # ── Mètriques generals ────────────────────────────────────────────────────
+    mc1, mc2, mc3, mc4 = st.columns(4)
+    mc1.metric("Tweets del dia",       f"{len(df_dia):,}")
+    mc2.metric("Tweets d'usuaris",     f"{len(df_usr):,}")
+    mc3.metric("Tweets oficials",      f"{len(df_ofi):,}")
+    mc4.metric("Línies amb activitat", df_dia["linia"].dropna().nunique())
+    st.divider()
+
+    # ── Gràfic resum: tweets per línia ───────────────────────────────────────
+    st.subheader("Activitat per línia")
+    linia_counts = (
+        df_dia["linia"].dropna()
+        .value_counts()
+        .reset_index()
+        .rename(columns={"linia": "linia", "count": "n"})
+        .sort_values("n", ascending=True)
+    )
+    linia_counts["color"] = linia_counts["linia"].map(LINE_COLORS).fillna(DEFAULT_COLOR)
+    fig_ov = go.Figure(go.Bar(
+        x=linia_counts["n"], y=linia_counts["linia"],
+        orientation="h",
+        marker_color=linia_counts["color"].tolist(),
+        text=linia_counts["n"], textposition="outside",
+        hovertemplate="<b>%{y}</b>: %{x} tweets<extra></extra>",
+    ))
+    fig_ov.update_layout(
+        height=280, margin=dict(l=60, r=60, t=10, b=10),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color="#94a3b8"),
+    )
+    st.plotly_chart(fig_ov, use_container_width=True)
+    st.divider()
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _tweet_card(row, border_color, show_confianza=False):
+        conf_txt = (f" · conf. {row.get('confianza', 0):.2f}"
+                    if show_confianza and pd.notna(row.get("confianza")) else "")
+        tipus_val = str(row.get("tipus_incident", ""))
+        tipus_txt = (
+            f" &nbsp;<span style='background:{TIPO_COLORS.get(tipus_val, DEFAULT_COLOR)}33;"
+            f"color:{TIPO_COLORS.get(tipus_val, DEFAULT_COLOR)};font-weight:700;"
+            f"font-size:11px;padding:1px 7px;border-radius:10px'>{tipus_val}</span>"
+            if pd.notna(row.get("tipus_incident")) and tipus_val not in ("sin_incidencia", "nan", "")
+            else ""
+        )
+        return (
+            f"<div style='padding:12px 16px;margin-bottom:8px;background:#0f172a;"
+            f"border-radius:8px;border-left:4px solid {border_color}'>"
+            f"<div style='display:flex;align-items:center;gap:8px;margin-bottom:6px'>"
+            f"<span style='font-size:14px;font-weight:700;color:#f1f5f9'>"
+            f"{str(row.get('hora',''))[:5]}</span>"
+            f"<span style='font-size:12px;color:#64748b'>{row.get('user','')}{conf_txt}</span>"
+            f"{tipus_txt}</div>"
+            f"<div style='font-size:13px;color:#cbd5e1;line-height:1.6'>"
+            f"{str(row.get('tweet_text',''))[:350]}</div>"
+            f"</div>"
+        )
+
+    def _delta_badge(mins):
+        if mins <= 0:
+            return ""
+        h, m = divmod(int(mins), 60)
+        txt   = f"{h}h {m}min" if h > 0 else f"{m}min"
+        color = "#DC143C" if mins >= 60 else ("#F59E0B" if mins >= 30 else "#10B981")
+        return (
+            f"<div style='display:inline-flex;align-items:center;gap:8px;"
+            f"background:{color}22;border:1px solid {color}55;border-radius:20px;"
+            f"padding:4px 14px;margin:10px 0'>"
+            f"<span style='font-size:13px;font-weight:700;color:{color}'>"
+            f"Detecció anticipada: {txt} abans</span></div>"
+        )
+
+    # ── Bucle per cada línia ──────────────────────────────────────────────────
+    linies_actives = (
+        df_dia["linia"].dropna().value_counts()
+        .index.tolist()
+    )
+
+    for linia in linies_actives:
+        lcolor = LINE_COLORS.get(linia, DEFAULT_COLOR)
+        df_l   = df_dia[df_dia["linia"] == linia]
+        df_l_u = df_usr[df_usr["linia"] == linia].sort_values("hora")
+        df_l_o = df_ofi[df_ofi["linia"] == linia].sort_values("hora")
+
+        # Header de línia
+        st.markdown(
+            f"<div style='display:flex;align-items:center;gap:12px;margin:24px 0 12px;"
+            f"padding:10px 16px;background:linear-gradient(90deg,{lcolor}22 0%,transparent 100%);"
+            f"border-radius:8px;border-left:3px solid {lcolor}'>"
+            f"<span style='font-size:18px;font-weight:800;color:#f1f5f9'>Línia {linia}</span>"
+            f"<span style='font-size:12px;color:#64748b'>{len(df_l)} tweets el 20 gen</span>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+        col_chart, col_detail = st.columns([1, 2])
+
+        with col_chart:
+            # Distribució tipus incident
+            tc = (df_l["tipus_incident"].dropna()
+                  .replace("sin_incidencia", pd.NA).dropna()
+                  .value_counts().reset_index()
+                  .rename(columns={"tipus_incident": "t", "count": "n"}))
+            if len(tc) > 0:
+                tc["color"] = tc["t"].map(TIPO_COLORS).fillna(DEFAULT_COLOR)
+                fig_tc = go.Figure(go.Bar(
+                    x=tc["n"], y=tc["t"], orientation="h",
+                    marker_color=tc["color"].tolist(),
+                    text=tc["n"], textposition="outside",
+                ))
+                fig_tc.update_layout(
+                    height=max(150, len(tc) * 40 + 60),
+                    margin=dict(l=100, r=50, t=5, b=5),
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#94a3b8", size=11),
+                    xaxis=dict(showgrid=False),
+                )
+                st.plotly_chart(fig_tc, use_container_width=True)
+            else:
+                st.caption("Sense incidents classificats")
+
+        with col_detail:
+            INC_KWS = (r"incid[eè]|interromp|tall|retard|demora|no circula|"
+                       r"afectaci|aturad|suprim|alternatiu|arbre|mur|caiguda|temporal")
+            # Tots els tweets oficials del dia (no filtrats per linia)
+            df_ofi_all = df_ofi.sort_values("hora")
+            # Intent 1: línia assignada + paraules d'incident
+            cand = df_l_o[df_l_o["tweet_text"].str.lower().str.contains(INC_KWS, na=False, regex=True)]
+            # Intent 2: menciona el codi de línia al text + paraules d'incident
+            if len(cand) == 0:
+                cand = df_ofi_all[
+                    df_ofi_all["tweet_text"].str.contains(linia, case=False, na=False) &
+                    df_ofi_all["tweet_text"].str.lower().str.contains(INC_KWS, na=False, regex=True)
+                ]
+            # Intent 3: qualsevol tweet oficial amb paraules d'incident (sense filtre de línia)
+            if len(cand) == 0:
+                cand = df_l_o  # fallback: primer tweet oficial assignat a la línia
+            primer_of = cand.sort_values("hora").iloc[0] if len(cand) > 0 else None
+            hora_of   = primer_of["hora"][:5] if primer_of is not None else "99:99"
+
+            # Tweets d'usuari ABANS del primer oficial (tots)
+            pre_of = df_l_u[df_l_u["hora"] < hora_of]
+
+            if len(pre_of) > 0:
+                st.markdown(
+                    f"<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+                    f"text-transform:uppercase;letter-spacing:1px;margin-bottom:6px'>"
+                    f"Usuaris abans de l'avís oficial</div>",
+                    unsafe_allow_html=True,
+                )
+                cards = "".join(_tweet_card(r, lcolor, show_confianza=True)
+                                for _, r in pre_of.iterrows())
+                st.markdown(cards, unsafe_allow_html=True)
+            else:
+                st.caption("Sense tweets d'usuari anteriors a l'avís oficial.")
+
+            if primer_of is not None:
+                # Calcular delta entre primer usuari i primer oficial
+                if len(pre_of) > 0:
+                    try:
+                        h1 = pre_of.iloc[0]["hora"][:5]
+                        h2 = hora_of
+                        t1 = pd.Timestamp(f"2026-01-20 {h1}")
+                        t2 = pd.Timestamp(f"2026-01-20 {h2}")
+                        delta_min = (t2 - t1).total_seconds() / 60
+                        if delta_min > 0:
+                            st.markdown(_delta_badge(delta_min), unsafe_allow_html=True)
+                    except Exception:
+                        pass
+
+                st.markdown(
+                    f"<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+                    f"text-transform:uppercase;letter-spacing:1px;margin:8px 0 4px'>"
+                    f"Primera comunicació oficial (@rodalies)</div>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(_tweet_card(primer_of, "#DC143C"), unsafe_allow_html=True)
+            else:
+                st.markdown(
+                    "<div style='color:#64748b;font-size:13px;font-style:italic;margin-top:12px'>"
+                    "No s'ha trobat cap avís oficial de @rodalies per aquesta línia aquell dia."
+                    "</div>",
+                    unsafe_allow_html=True,
+                )
+
+    st.divider()
+
+    # ── Bloc especial R11 ─────────────────────────────────────────────────────
+    st.markdown(
+        "<div style='display:flex;align-items:center;gap:12px;margin:24px 0 12px;"
+        "padding:10px 16px;background:linear-gradient(90deg,#f59e0b22 0%,transparent 100%);"
+        "border-radius:8px;border-left:3px solid #f59e0b'>"
+        "<span style='font-size:18px;font-weight:800;color:#f1f5f9'>R11 / RG1 — Cas de l'Arbre</span>"
+        "<span style='font-size:12px;color:#64748b'>Breda–Maçanet · incident matinal</span>"
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    r11_kws = r"r11|breda|ma.anet|caldes.*girona|girona.*caldes|figueres.*sants|sants.*figueres"
+    df_r11 = df_dia[
+        df_dia["tweet_text"].str.lower().str.contains(r11_kws, na=False, regex=True)
+    ].sort_values("hora")
+    df_r11_u = df_r11[~es_oficial.reindex(df_r11.index, fill_value=False)]
+    df_r11_o = df_r11[es_oficial.reindex(df_r11.index, fill_value=False)]
+
+    st.markdown(_delta_badge(141), unsafe_allow_html=True)  # 2h 21min = 141 min
+
+    r11c1, r11c2 = st.columns(2)
+    with r11c1:
+        st.markdown(
+            "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+            "text-transform:uppercase;letter-spacing:1px;margin-bottom:6px'>"
+            "Usuaris detecten l'incident</div>",
+            unsafe_allow_html=True,
+        )
+        for _, r in df_r11_u[df_r11_u["hora"] <= "10:30"].head(8).iterrows():
+            st.markdown(_tweet_card(r, "#f59e0b"), unsafe_allow_html=True)
+
+    with r11c2:
+        st.markdown(
+            "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+            "text-transform:uppercase;letter-spacing:1px;margin-bottom:6px'>"
+            "Comunicació oficial</div>",
+            unsafe_allow_html=True,
+        )
+        for _, r in df_r11_o[df_r11_o["hora"] <= "10:30"].head(5).iterrows():
+            st.markdown(_tweet_card(r, "#DC143C"), unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── Tweets rellevants sense línia assignada ───────────────────────────────
+    st.subheader("Tweets d'incident sense línia assignada")
+    st.caption("Tweets classificats com a incident (confiança > 0.80) però sense línia detectada")
+    df_sense_linia = df_dia[
+        df_dia["linia"].isna() &
+        df_dia["tipus_incident"].notna() &
+        (df_dia["tipus_incident"] != "sin_incidencia") &
+        (pd.to_numeric(df_dia["confianza"], errors="coerce") >= 0.80)
+    ].sort_values("hora").head(15)
+    if len(df_sense_linia) > 0:
+        for _, r in df_sense_linia.iterrows():
+            tc = TIPO_COLORS.get(str(r.get("tipus_incident", "")), DEFAULT_COLOR)
+            st.markdown(_tweet_card(r, tc, show_confianza=True), unsafe_allow_html=True)
+    else:
+        st.info("No s'han trobat tweets d'incident sense línia assignada.")
