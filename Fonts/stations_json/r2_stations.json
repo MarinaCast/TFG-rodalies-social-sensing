@@ -1,0 +1,16 @@
+{"R2":[
+{"id":71705,"name":"Castelldefels","lat":41.2787578864195,"lon":1.97941660881043,"index":0},
+{"id":71706,"name":"Gavà","lat":41.3032320004574,"lon":2.01056241989136,"index":1},
+{"id":71709,"name":"Viladecans","lat":41.3093813304715,"lon":2.02766418457031,"index":2},
+{"id":71707,"name":"El Prat de Llobregat","lat":41.3307745444868,"lon":2.08952665328979,"index":3},
+{"id":71708,"name":"Bellvitge","lat":41.3548264690591,"lon":2.11551189422607,"index":4},
+{"id":71801,"name":"Barcelona Sants","lat":41.3791593246702,"lon":2.14084267616272,"index":5},
+{"id":71802,"name":"Barcelona-Passeig de Gràcia","lat":41.3926021012834,"lon":2.16540098190308,"index":6},
+{"id":79009,"name":"El Clot-Aragó","lat":41.4099850434808,"lon":2.18852162361145,"index":7},
+{"id":71004,"name":"Sant Andreu Comtal","lat":41.4360346514472,"lon":2.19348907470703,"index":8},
+{"id":79005,"name":"Montcada i Reixac","lat":41.4842045013557,"lon":2.18814611434937,"index":9},
+{"id":79011,"name":"La Llagosta","lat":41.5104733783503,"lon":2.19979763031006,"index":10},
+{"id":79006,"name":"Mollet-Sant Fost","lat":41.5335352375515,"lon":2.2177791595459,"index":11},
+{"id":79007,"name":"Montmeló","lat":41.5498527007679,"lon":2.24558293819427,"index":12},
+{"id":79100,"name":"Granollers Centre","lat":41.5996549017038,"lon":2.29153990745544,"index":13}
+]}

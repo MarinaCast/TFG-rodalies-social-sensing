@@ -1,0 +1,19 @@
+{"R2S":[
+{"id":71600,"name":"Sant Vicenç de Calders","lat":41.186125,"lon":1.52633600000002,"index":0},
+{"id":71601,"name":"Calafell","lat":41.1894011397305,"lon":1.57483220100403,"index":1},
+{"id":71602,"name":"Segur de Calafell","lat":41.1923964670938,"lon":1.6064715385437,"index":2},
+{"id":71603,"name":"Cunit","lat":41.1947780985916,"lon":1.63195252418518,"index":3},
+{"id":71604,"name":"Cubelles","lat":41.2041342457699,"lon":1.67603731155396,"index":4},
+{"id":71700,"name":"Vilanova i la Geltrú","lat":41.2199615747229,"lon":1.73077583312988,"index":5},
+{"id":71701,"name":"Sitges","lat":41.2392704096791,"lon":1.80972933769226,"index":6},
+{"id":71703,"name":"Garraf","lat":41.2543391182281,"lon":1.90256595611572,"index":7},
+{"id":71704,"name":"Platja de Castelldefels","lat":41.2670254371119,"lon":1.95696115493774,"index":8},
+{"id":71705,"name":"Castelldefels","lat":41.2787578864195,"lon":1.97941660881043,"index":9},
+{"id":71706,"name":"Gavà","lat":41.3032320004574,"lon":2.01056241989136,"index":10},
+{"id":71709,"name":"Viladecans","lat":41.3093813304715,"lon":2.02766418457031,"index":11},
+{"id":71707,"name":"El Prat de Llobregat","lat":41.3307745444868,"lon":2.08952665328979,"index":12},
+{"id":71708,"name":"Bellvitge","lat":41.3548264690591,"lon":2.11551189422607,"index":13},
+{"id":71801,"name":"Barcelona Sants","lat":41.3791593246702,"lon":2.14084267616272,"index":14},
+{"id":71802,"name":"Barcelona-Passeig de Gràcia","lat":41.3926021012834,"lon":2.16540098190308,"index":15},
+{"id":71400,"name":"Barcelona-Estació de França","lat":41.384343574934,"lon":2.18561410903931,"index":16}
+]}
