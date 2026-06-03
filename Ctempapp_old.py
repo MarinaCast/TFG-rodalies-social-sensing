@@ -38,9 +38,6 @@ ALL_TIPOS = ["demora", "averia", "obras", "parada", "arrollamiento", "huelga"]
 PATHS = {
     "csv":        r"C:\MARINA\Universitat\TFG - Visualització\Fonts\classificacio_estacions_ubicacions.csv",
     "json":       r"C:\MARINA\Universitat\TFG - Visualització\Fonts\stations_info.json",
-    "json2":      r"C:\MARINA\Universitat\TFG - Visualització\Fonts\stations_info-2.json",
-    "json_dir":   r"C:\MARINA\Universitat\TFG - Visualització\Fonts\stations_json",
-    "csv_stations": r"C:\MARINA\Universitat\TFG - Visualització\Fonts\stations.csv",
     "csv_inc":    r"C:\MARINA\Universitat\TFG - Visualització\Fonts\tweets_incidencias.csv",
     "csv_master": r"C:\MARINA\Universitat\TFG - Visualització\Fonts\tweets_merged.csv",
 }
@@ -61,35 +58,17 @@ _LOGO_B64 = base64.b64encode(_LOGO_SVG.encode()).decode()
 # ══════════════════════════════════════════════════════════════════════════════
 @st.cache_data
 def load_stations_json():
-    import glob
-    combined = {}
-
-    # Font principal: stations_info.json (coordenades oficials de totes les línies)
-    if os.path.exists(PATHS["json"]):
-        with open(PATHS["json"], encoding="utf-8") as f:
-            combined.update(json.load(f))
-
-    # Supplement: fitxers individuals per línies no cobertes per json2
-    for filepath in sorted(glob.glob(os.path.join(PATHS["json_dir"], "*_stations.json"))):
-        with open(filepath, encoding="utf-8") as f:
-            data = json.load(f)
-        for line, stations in data.items():
-            if line not in combined:
-                combined[line] = stations
-
+    with open(PATHS["json"], encoding="utf-8") as f:
+        raw = json.load(f)
     lookup = {}
-    for line, stations in combined.items():
+    for line, stations in raw.items():
         for s in stations:
             name = s["name"]
             if name not in lookup:
                 lookup[name] = {"lat": s["lat"], "lon": s["lon"], "lines": []}
             if line not in lookup[name]["lines"]:
                 lookup[name]["lines"].append(line)
-
-    raw_sorted = {
-        line: sorted(sts, key=lambda s: s["index"])
-        for line, sts in combined.items()
-    }
+    raw_sorted = {line: sorted(sts, key=lambda s: s["index"]) for line, sts in raw.items()}
     return lookup, raw_sorted
 
 
@@ -227,929 +206,6 @@ def apply_filters(src, lines=None, idiomes=None, caracters=None,
     if date_end:
         mask &= src["date"] <= date_end
     return src[mask]
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# HELPERS PER CASOS D'ESTUDI
-# ══════════════════════════════════════════════════════════════════════════════
-def _tweet_card(row, border_color, show_confianza=False):
-    conf_txt = (f" · conf. {row.get('confianza', 0):.2f}"
-                if show_confianza and pd.notna(row.get("confianza")) else "")
-    tipus_val = str(row.get("tipus_incident", ""))
-    tipus_txt = (
-        f" &nbsp;<span style='background:{TIPO_COLORS.get(tipus_val, DEFAULT_COLOR)}33;"
-        f"color:{TIPO_COLORS.get(tipus_val, DEFAULT_COLOR)};font-weight:700;"
-        f"font-size:11px;padding:1px 7px;border-radius:10px'>{tipus_val}</span>"
-        if pd.notna(row.get("tipus_incident")) and tipus_val not in ("sin_incidencia", "nan", "")
-        else ""
-    )
-    return (
-        f"<div style='padding:12px 16px;margin-bottom:8px;background:#0f172a;"
-        f"border-radius:8px;border-left:4px solid {border_color}'>"
-        f"<div style='display:flex;align-items:center;gap:8px;margin-bottom:6px'>"
-        f"<span style='font-size:14px;font-weight:700;color:#f1f5f9'>"
-        f"{str(row.get('hora',''))[:5]}</span>"
-        f"<span style='font-size:12px;color:#64748b'>{row.get('user','')}{conf_txt}</span>"
-        f"{tipus_txt}</div>"
-        f"<div style='font-size:13px;color:#cbd5e1;line-height:1.6'>"
-        f"{str(row.get('tweet_text',''))[:350]}</div>"
-        f"</div>"
-    )
-
-
-def _delta_badge(mins):
-    if mins <= 0:
-        return ""
-    h, m = divmod(int(mins), 60)
-    txt   = f"{h}h {m}min" if h > 0 else f"{m}min"
-    color = "#DC143C" if mins >= 60 else ("#F59E0B" if mins >= 30 else "#10B981")
-    return (
-        f"<div style='display:inline-flex;align-items:center;gap:8px;"
-        f"background:{color}22;border:1px solid {color}55;border-radius:20px;"
-        f"padding:4px 14px;margin:10px 0'>"
-        f"<span style='font-size:13px;font-weight:700;color:{color}'>"
-        f"Detecció anticipada: {txt} abans</span></div>"
-    )
-
-
-def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
-    st.title(titol)
-    st.markdown(
-        f"<p style='color:#94a3b8;font-size:0.95rem;margin:-8px 0 20px;line-height:1.7'>"
-        f"{descripcio_html}</p>",
-        unsafe_allow_html=True,
-    )
-
-    df_dia = df_master[df_master["date"] == dia].copy()
-
-    es_oficial = df_dia["user"].str.lower().str.match(
-        r"@rodalies$|@rod\d+cat|@inforodali|@emergenci|"
-        r"@3catinfo|@btvnoticies|@elnacionalcat|@adif|@renfe|@inforenfe|@radiosabd",
-        na=False,
-    )
-    df_usr = df_dia[~es_oficial].copy()
-    df_ofi = df_dia[es_oficial].copy()
-
-
-    INC_KWS = (r"incid[eè]|interromp|tall|retard|demora|no circula|"
-               r"afectaci|aturad|suprim|alternatiu|arbre|mur|caiguda|temporal")
-
-    linies_actives = df_dia["linia"].dropna().value_counts().index.tolist()
-    df_ofi_all = df_ofi.sort_values("hora")
-
-    # ── Pre-càlcul detecció anticipada per línia ──────────────────────────────
-    LINE_ACCOUNT = {
-        "R1": "rod1cat", "R2": "rod2cat", "R2N": "rod2cat", "R2S": "rod2cat",
-        "R3": "rod3cat", "R4": "rod4cat", "R7": "rod7cat", "R8": "rod8cat",
-    }
-
-    def _det(linia):
-        df_l_u = df_usr[df_usr["linia"] == linia].sort_values("hora")
-        df_l_o = df_ofi[df_ofi["linia"] == linia]
-
-        # Compte oficial específic de la línia (ex: @rod1cat per R1)
-        rod_acc = LINE_ACCOUNT.get(linia)
-        df_rod = (df_ofi_all[df_ofi_all["user"].str.lower()
-                             .str.contains(rod_acc, na=False)]
-                  if rod_acc else pd.DataFrame())
-
-        # Tots els oficials que mencionen la línia al text
-        df_mencio = df_ofi_all[
-            df_ofi_all["tweet_text"].str.contains(linia, case=False, na=False)
-        ]
-
-        # Unió: línia assignada + compte específic + mencions al text
-        cand = pd.concat([df_l_o, df_rod, df_mencio]) \
-                 .drop_duplicates(subset=["tweet_text"]) \
-                 .sort_values("hora")
-
-        # hora_of: primer tweet oficial qualsevol (per a display de comun. oficials)
-        primer_of = cand.iloc[0] if len(cand) > 0 else None
-        hora_of   = primer_of["hora"][:5] if primer_of is not None else "99:99"
-
-        # hora_of_inc: primer tweet oficial AMB keywords d'incident
-        # → llindar real per a pre/post i estadística
-        cand_inc = cand[cand["tweet_text"].str.lower().str.contains(
-            INC_KWS, na=False, regex=True)]
-        primer_of_inc = cand_inc.iloc[0] if len(cand_inc) > 0 else None
-        hora_of_inc   = primer_of_inc["hora"][:5] if primer_of_inc is not None else "99:99"
-
-        # pre_of i delta_min calculats sobre hora_of_inc
-        pre_of    = df_l_u[df_l_u["hora"] < hora_of_inc]
-        delta_min = None
-        if len(pre_of) > 0 and primer_of_inc is not None:
-            try:
-                t1 = pd.Timestamp(f"{dia} {pre_of.iloc[0]['hora'][:5]}")
-                t2 = pd.Timestamp(f"{dia} {hora_of_inc}")
-                dm = (t2 - t1).total_seconds() / 60
-                if dm > 0:
-                    delta_min = dm
-            except Exception:
-                pass
-        return {"df_l_u": df_l_u,
-                "primer_of": primer_of, "hora_of": hora_of,
-                "primer_of_inc": primer_of_inc, "hora_of_inc": hora_of_inc,
-                "pre_of": pre_of, "delta_min": delta_min, "cand": cand}
-
-    detection = {l: _det(l) for l in linies_actives}
-
-    # ── Mètriques principals ──────────────────────────────────────────────────
-    is_q_all = (
-        ((df_dia["caracter"] == "queixa") if "caracter" in df_dia.columns
-         else pd.Series(False, index=df_dia.index)) |
-        (df_dia["tipus_incident"].notna() &
-         ~df_dia["tipus_incident"].isin(["sin_incidencia", "nan", ""]))
-    )
-    n_incidents = int(is_q_all.sum())
-    all_deltas  = [det["delta_min"] for det in detection.values() if det["delta_min"]]
-    max_delta   = max(all_deltas) if all_deltas else None
-    pre_conf_all = pd.concat(
-        [det["pre_of"]["confianza"] for det in detection.values()
-         if len(det["pre_of"]) > 0 and "confianza" in det["pre_of"].columns],
-        ignore_index=True,
-    ).dropna()
-    pct_high = float((pre_conf_all > 0.80).mean() * 100) if len(pre_conf_all) > 0 else None
-
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Tweets del dia",    f"{len(df_dia):,}")
-    m2.metric("Tweets d'incident", f"{n_incidents:,}")
-    m3.metric("Línies afectades",  df_dia["linia"].dropna().nunique())
-    if max_delta:
-        hd, md = divmod(int(max_delta), 60)
-        m4.metric("Màxima ventaja", f"{hd}h {md}min" if hd > 0 else f"{md} min")
-    else:
-        m4.metric("Màxima ventaja", "—")
-    m5.metric("% pre-ofic. conf > 0.80",
-              f"{pct_high:.0f}%" if pct_high is not None else "—")
-    st.divider()
-
-    # ── Timeline Gantt + Ranking ──────────────────────────────────────────────
-    col_gantt, col_rank = st.columns([3, 2])
-
-    def _h(hora_str):
-        try:
-            h, m = str(hora_str)[:5].split(":")
-            return int(h) + int(m) / 60
-        except Exception:
-            return None
-
-    with col_gantt:
-        st.markdown(
-            "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
-            "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>"
-            "Timeline: primer tweet usuari vs avís oficial</div>",
-            unsafe_allow_html=True,
-        )
-        gantt_traces = []
-        gantt_ann    = []
-        linies_gantt = []
-        for linia in linies_actives:
-            det      = detection[linia]
-            n_pre_g  = len(det["pre_of"])
-            h_usr_s  = det["pre_of"].iloc[0]["hora"][:5] if n_pre_g > 0 else None
-            h_ofi_s  = det["hora_of_inc"] if det["hora_of_inc"] != "99:99" else None
-            if h_usr_s is None and h_ofi_s is None:
-                continue
-            linies_gantt.append(linia)
-            lcolor = LINE_COLORS.get(linia, DEFAULT_COLOR)
-            h_usr_f = _h(h_usr_s)
-            h_ofi_f = _h(h_ofi_s)
-            first_l = (linia == linies_gantt[0])
-            if h_usr_f is not None and h_ofi_f is not None:
-                gantt_traces.append(go.Scatter(
-                    x=[h_usr_f, h_ofi_f], y=[linia, linia],
-                    mode="lines", line=dict(color=lcolor, width=2),
-                    showlegend=False, hoverinfo="skip",
-                ))
-                if det["delta_min"]:
-                    hh, mm = divmod(int(det["delta_min"]), 60)
-                    lbl = f"+{hh}h {mm}min" if hh > 0 else f"+{mm}min"
-                    gantt_ann.append(dict(
-                        x=(h_usr_f + h_ofi_f) / 2, y=linia,
-                        text=lbl, showarrow=False,
-                        font=dict(size=9, color="#94a3b8"), yshift=13,
-                    ))
-            if h_usr_f is not None:
-                gantt_traces.append(go.Scatter(
-                    x=[h_usr_f], y=[linia],
-                    mode="markers+text",
-                    marker=dict(color="#7dd3fc", size=11),
-                    text=[h_usr_s], textposition="bottom center",
-                    textfont=dict(size=8, color="#7dd3fc"),
-                    name="Primer tweet usuari", legendgroup="usr",
-                    showlegend=first_l,
-                    hovertemplate=f"<b>{linia}</b> usuari: {h_usr_s}<extra></extra>",
-                ))
-            if h_ofi_f is not None:
-                gantt_traces.append(go.Scatter(
-                    x=[h_ofi_f], y=[linia],
-                    mode="markers+text",
-                    marker=dict(color="#f87171", size=11),
-                    text=[h_ofi_s], textposition="bottom center",
-                    textfont=dict(size=8, color="#f87171"),
-                    name="Primer avís oficial", legendgroup="ofi",
-                    showlegend=first_l,
-                    hovertemplate=f"<b>{linia}</b> oficial: {h_ofi_s}<extra></extra>",
-                ))
-        fig_gantt = go.Figure(data=gantt_traces)
-        fig_gantt.update_layout(
-            height=max(200, len(linies_gantt) * 52 + 80),
-            margin=dict(l=20, r=20, t=20, b=50),
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#94a3b8", size=10),
-            xaxis=dict(title="Hora del dia", range=[0, 24], dtick=2,
-                       showgrid=True, gridcolor="#1e293b"),
-            yaxis=dict(showgrid=False),
-            legend=dict(orientation="h", y=1.08),
-            annotations=gantt_ann,
-        )
-        st.plotly_chart(fig_gantt, use_container_width=True, key=f"ce_gantt_{dia}")
-
-    with col_rank:
-        st.markdown(
-            "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
-            "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>"
-            "Rànquing: ventaja temporal (minuts)</div>",
-            unsafe_allow_html=True,
-        )
-        rank_data = sorted(
-            [(l, det["delta_min"]) for l, det in detection.items()
-             if det["delta_min"] and det["delta_min"] > 0],
-            key=lambda x: x[1], reverse=True,
-        )
-        if rank_data:
-            rk_l, rk_d = zip(*rank_data)
-            rk_c = [LINE_COLORS.get(l, DEFAULT_COLOR) for l in rk_l]
-            rk_t = [f"+{int(d//60)}h {int(d%60)}min" if d >= 60 else f"+{int(d)}min"
-                    for d in rk_d]
-            fig_rank = go.Figure(go.Bar(
-                x=list(rk_d), y=list(rk_l), orientation="h",
-                marker_color=rk_c, text=rk_t, textposition="outside",
-                hovertemplate="<b>%{y}</b>: %{x:.0f} min<extra></extra>",
-            ))
-            fig_rank.update_layout(
-                height=max(200, len(rank_data) * 52 + 80),
-                margin=dict(l=20, r=80, t=20, b=50),
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#94a3b8", size=10),
-                xaxis=dict(showgrid=True, gridcolor="#1e293b", title="min"),
-                yaxis=dict(showgrid=False),
-            )
-            st.plotly_chart(fig_rank, use_container_width=True, key=f"ce_rank_{dia}")
-        else:
-            st.caption("Cap avantatge temporal detectat.")
-
-    st.divider()
-
-    # ── Taula d'evidència semafòrica ──────────────────────────────────────────
-    st.markdown(
-        "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
-        "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>"
-        "Taula d'evidència per línia</div>",
-        unsafe_allow_html=True,
-    )
-    evid_rows = []
-    for linia in linies_actives:
-        det     = detection[linia]
-        n_pre_e = len(det["pre_of"])
-        has_ofi = det["hora_of_inc"] != "99:99"
-        delta_e = det["delta_min"]
-        pre_c_e = (det["pre_of"]["confianza"].dropna()
-                   if "confianza" in det["pre_of"].columns else pd.Series())
-        conf_pre = f"{pre_c_e.mean():.3f}" if len(pre_c_e) > 0 else "—"
-        pct_80_e = f"{(pre_c_e > 0.80).mean()*100:.0f}%" if len(pre_c_e) > 0 else "—"
-        if n_pre_e > 0 and has_ofi and delta_e and delta_e > 0:
-            estat = "🟢 Detecció precoç"
-        elif n_pre_e > 0 and not has_ofi:
-            estat = "🟡 Senyal social sense avís oficial"
-        elif n_pre_e == 0 and has_ofi:
-            estat = "⬜ Sense detecció social prèvia"
-        else:
-            estat = "⬜ Sense dades suficients"
-        h_usr_e = det["pre_of"].iloc[0]["hora"][:5] if n_pre_e > 0 else "—"
-        h_ofi_e = det["hora_of_inc"] if has_ofi else "—"
-        if delta_e:
-            hh_e, mm_e = divmod(int(delta_e), 60)
-            delta_str_e = f"+{hh_e}h {mm_e}min" if hh_e > 0 else f"+{mm_e}min"
-        else:
-            delta_str_e = "—"
-        evid_rows.append({
-            "Línia":         linia,
-            "Primer usuari": h_usr_e,
-            "Primer oficial":h_ofi_e,
-            "Ventaja":       delta_str_e,
-            "n pre":         n_pre_e,
-            "Conf. pre":     conf_pre,
-            "% conf > 0.80": pct_80_e,
-            "Estat":         estat,
-        })
-    st.dataframe(pd.DataFrame(evid_rows), use_container_width=True, hide_index=True)
-
-    st.divider()
-
-    # ── Corba acumulada de tweets d'incident ──────────────────────────────────
-    st.markdown(
-        "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
-        "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>"
-        "Corba acumulada de tweets d'incident (amb llindar oficial)</div>",
-        unsafe_allow_html=True,
-    )
-    sel_curve = st.pills("Línies", linies_actives, selection_mode="multi",
-                          default=linies_actives[:min(2, len(linies_actives))],
-                          key=f"ce_curve_{dia}")
-    if sel_curve:
-        fig_cum = go.Figure()
-        for linia in sel_curve:
-            det    = detection[linia]
-            df_lu3 = det["df_l_u"]
-            is_q3  = ((df_lu3["caracter"] == "queixa") if "caracter" in df_lu3.columns
-                      else pd.Series(False, index=df_lu3.index))
-            is_i3  = (df_lu3["tipus_incident"].notna() &
-                      ~df_lu3["tipus_incident"].isin(["sin_incidencia", "nan", ""]))
-            df_r3  = df_lu3[is_q3 | is_i3].dropna(subset=["hora"]).sort_values("hora")
-            if len(df_r3) == 0:
-                continue
-            lcolor = LINE_COLORS.get(linia, DEFAULT_COLOR)
-            hours3 = df_r3["hora"].apply(lambda h: _h(str(h)[:5]) or 0)
-            fig_cum.add_trace(go.Scatter(
-                x=list(hours3), y=list(range(1, len(df_r3) + 1)),
-                mode="lines+markers", name=linia,
-                line=dict(color=lcolor, width=2), marker=dict(size=4),
-                hovertemplate=f"<b>{linia}</b> %{{x:.1f}}h → %{{y}} tweets<extra></extra>",
-            ))
-            h_ofi3 = det["hora_of_inc"]
-            if h_ofi3 != "99:99":
-                fig_cum.add_vline(
-                    x=_h(h_ofi3), line_dash="dash",
-                    line_color=lcolor, line_width=1.5, opacity=0.7,
-                    annotation_text=f"Oficial {linia} {h_ofi3}",
-                    annotation_font_color=lcolor, annotation_font_size=8,
-                    annotation_position="top right",
-                )
-        fig_cum.update_layout(
-            height=300, margin=dict(l=40, r=20, t=30, b=40),
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#94a3b8", size=10),
-            xaxis=dict(title="Hora", showgrid=True, gridcolor="#1e293b", dtick=2, range=[0, 24]),
-            yaxis=dict(title="Tweets acumulats", showgrid=True, gridcolor="#1e293b"),
-            legend=dict(orientation="h", y=1.08),
-        )
-        st.plotly_chart(fig_cum, use_container_width=True, key=f"ce_cum_{dia}")
-
-    st.divider()
-
-    # ── Validació estadística complementària (expander) ───────────────────────
-    with st.expander("Validació estadística complementària · Mann-Whitney U + Cliff's δ"):
-        st.caption(
-            "El test es calcula únicament quan hi ha ≥ 5 tweets tant en el grup pre-oficial "
-            "com en el post-oficial. En aquest cas d'estudi, diverses línies no compleixen "
-            "aquest llindar; l'anàlisi estadística s'interpreta com a complementària i no com "
-            "a evidència principal. La confiança reflecteix la sortida del classificador "
-            "d'incidents, no una validació externa de la veracitat dels tweets."
-        )
-        try:
-        from scipy.stats import mannwhitneyu as _mwu
-        _scipy_ok = True
-    except ImportError:
-        _scipy_ok = False
-
-    N_MIN = 5  # mínim de tweets per grup per calcular el test
-
-    def _cliffs_delta(a, b):
-        """Rank-biserial correlation / Cliff's delta. Rang [-1, 1]."""
-        a, b = list(a), list(b)
-        gt = sum(1 for x in a for y in b if x > y)
-        lt = sum(1 for x in a for y in b if x < y)
-        return (gt - lt) / (len(a) * len(b)) if a and b else None
-
-    def _cliff_label(d):
-        if d is None:
-            return "—"
-        ad = abs(d)
-        if ad < 0.147:
-            return f"{d:+.3f} (negligible)"
-        if ad < 0.33:
-            return f"{d:+.3f} (petit)"
-        if ad < 0.474:
-            return f"{d:+.3f} (mig)"
-        return f"{d:+.3f} (gran)"
-
-    stat_rows = []
-    box_data  = []   # per al box plot
-    for linia in linies_actives:
-        det    = detection[linia]
-        df_lu  = det["df_l_u"]
-        hor_of = det["hora_of_inc"]  # llindar: primer avís d'incident específic
-        is_q2  = ((df_lu["caracter"] == "queixa") if "caracter" in df_lu.columns
-                  else pd.Series(False, index=df_lu.index))
-        is_i2  = (df_lu["tipus_incident"].notna() &
-                  ~df_lu["tipus_incident"].isin(["sin_incidencia", "nan", ""]))
-        df_r2  = df_lu[is_q2 | is_i2].dropna(subset=["hora", "confianza"])
-        if len(df_r2) == 0:
-            continue
-
-        pre_c  = (df_r2[df_r2["hora"] < hor_of]["confianza"]
-                  if hor_of != "99:99" else pd.Series(dtype=float))
-        post_c = (df_r2[df_r2["hora"] >= hor_of]["confianza"]
-                  if hor_of != "99:99" else df_r2["confianza"])
-
-        # box plot data
-        for v in pre_c:
-            box_data.append({"Línia": linia, "Grup": "Pre-oficial", "confianza": v})
-        for v in post_c:
-            box_data.append({"Línia": linia, "Grup": "Post-oficial", "confianza": v})
-
-        pval   = None
-        cliff  = None
-        if _scipy_ok and len(pre_c) >= N_MIN and len(post_c) >= N_MIN:
-            try:
-                _, pval = _mwu(pre_c, post_c, alternative="two-sided")
-                cliff   = _cliffs_delta(pre_c, post_c)
-            except Exception:
-                pass
-
-        pct_high = float((pre_c > 0.80).mean() * 100) if len(pre_c) > 0 else None
-        stat_rows.append({
-            "_linia":   linia,
-            "_pval":    pval,
-            "Línia":    linia,
-            "n pre":    len(pre_c),
-            "Mit. pre": round(float(pre_c.mean()), 3)   if len(pre_c) > 0 else None,
-            "Med. pre": round(float(pre_c.median()), 3) if len(pre_c) > 0 else None,
-            "n post":   len(post_c),
-            "Mit. post":round(float(post_c.mean()), 3)  if len(post_c) > 0 else None,
-            "Med. post":round(float(post_c.median()), 3)if len(post_c) > 0 else None,
-            "% pre > 0.80": round(pct_high, 1) if pct_high is not None else None,
-            "p (BH)":   pval,
-            "Cliff δ":  cliff,
-        })
-
-    # Benjamini-Hochberg correction sobre els p-valors vàlids
-    valid_idx = [i for i, r in enumerate(stat_rows) if r["_pval"] is not None]
-    if valid_idx:
-        raw_pvals = [stat_rows[i]["_pval"] for i in valid_idx]
-        m = len(raw_pvals)
-        order = sorted(range(m), key=lambda k: raw_pvals[k])
-        bh = [None] * m
-        for rank, k in enumerate(order):
-            bh[k] = raw_pvals[k] * m / (rank + 1)
-        # monotone (backward pass)
-        cur_min = 1.0
-        for k in reversed(order):
-            cur_min = min(cur_min, bh[k])
-            bh[k] = cur_min
-        for rank_i, stat_i in enumerate(valid_idx):
-            stat_rows[stat_i]["p (BH)"] = min(bh[rank_i], 1.0)
-
-    if stat_rows:
-        st.markdown(
-            "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
-            "text-transform:uppercase;letter-spacing:1px;margin:4px 0 10px'>"
-            "Validació estadística · Mann-Whitney U + Cliff's δ "
-            "(confiança pre vs post avís oficial, corr. Benjamini-Hochberg)</div>",
-            unsafe_allow_html=True,
-        )
-
-        def _fmt(v, decimals=3):
-            if v is None or (isinstance(v, float) and pd.isna(v)):
-                return "—"
-            return f"{v:.{decimals}f}"
-
-        def _fmt_p(p):
-            if p is None or (isinstance(p, float) and pd.isna(p)):
-                return f"— (n < {N_MIN})"
-            s = f"{p:.4f}"
-            if p < 0.001: return f"{s} ✓✓✓"
-            if p < 0.01:  return f"{s} ✓✓"
-            if p < 0.05:  return f"{s} ✓"
-            return s
-
-        disp_cols = ["Línia", "n pre", "Mit. pre", "Med. pre",
-                     "n post", "Mit. post", "Med. post",
-                     "% pre > 0.80", "p (BH)", "Cliff δ"]
-        df_disp = pd.DataFrame(stat_rows)[disp_cols].copy()
-        df_disp["Mit. pre"]  = df_disp["Mit. pre"].apply(_fmt)
-        df_disp["Med. pre"]  = df_disp["Med. pre"].apply(_fmt)
-        df_disp["Mit. post"] = df_disp["Mit. post"].apply(_fmt)
-        df_disp["Med. post"] = df_disp["Med. post"].apply(_fmt)
-        df_disp["% pre > 0.80"] = df_disp["% pre > 0.80"].apply(
-            lambda v: f"{v:.1f}%" if (v is not None and not (isinstance(v, float) and pd.isna(v))) else "—")
-        df_disp["p (BH)"]   = df_disp["p (BH)"].apply(_fmt_p)
-        df_disp["Cliff δ"]  = df_disp["Cliff δ"].apply(_cliff_label)
-        st.dataframe(df_disp, use_container_width=True, hide_index=True)
-        st.caption(
-            f"✓ p < 0.05 · ✓✓ p < 0.01 · ✓✓✓ p < 0.001 (p-valors corregits BH). "
-            f"Test calculat només si n ≥ {N_MIN} en cada grup. "
-            "Cliff's δ: |δ| < 0.147 negligible · 0.147-0.33 petit · 0.33-0.474 mig · ≥ 0.474 gran. "
-            "La confiança reflecteix la sortida del classificador d'incidents, "
-            "no una validació externa de la veracitat dels tweets."
-        )
-
-        # Box plot pre vs post per línia (una llegenda clara, dos grups per línia)
-        if box_data:
-            df_box = pd.DataFrame(box_data)
-            linies_box = [r["Línia"] for r in stat_rows]
-            fig_box = go.Figure()
-            pre_shown  = False
-            post_shown = False
-            for lin in linies_box:
-                lc = LINE_COLORS.get(lin, DEFAULT_COLOR)
-                for grup, color, shown_flag in [
-                    ("Pre-oficial",  "#7dd3fc", pre_shown),
-                    ("Post-oficial", "#f87171", post_shown),
-                ]:
-                    vals = df_box[(df_box["Línia"] == lin) &
-                                  (df_box["Grup"] == grup)]["confianza"].tolist()
-                    if not vals:
-                        continue
-                    show_leg = not (pre_shown if grup == "Pre-oficial" else post_shown)
-                    fig_box.add_trace(go.Box(
-                        y=vals,
-                        x=[lin] * len(vals),
-                        name=grup,
-                        legendgroup=grup,
-                        marker_color=color,
-                        boxpoints="all", jitter=0.4, pointpos=0,
-                        marker=dict(size=5, opacity=0.55),
-                        line=dict(width=1.5),
-                        showlegend=show_leg,
-                        offsetgroup=grup,
-                    ))
-                    if grup == "Pre-oficial":
-                        pre_shown = True
-                    else:
-                        post_shown = True
-            fig_box.update_layout(
-                height=320,
-                margin=dict(l=40, r=20, t=30, b=40),
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#94a3b8", size=11),
-                yaxis=dict(title="Confiança", range=[0.65, 1.02],
-                           showgrid=True, gridcolor="#1e293b"),
-                xaxis=dict(showgrid=False),
-                boxmode="group",
-                legend=dict(orientation="h", y=1.08),
-                title=dict(
-                    text="Distribució de confiança per línia: pre-oficial vs post-oficial",
-                    font=dict(size=11, color="#64748b"), x=0,
-                ),
-            )
-            st.plotly_chart(fig_box, use_container_width=True,
-                            key=f"ce_box_{dia}")
-
-    st.divider()
-
-    # ── Detall per línia ──────────────────────────────────────────────────────
-    for linia in linies_actives:
-        lcolor    = LINE_COLORS.get(linia, DEFAULT_COLOR)
-        df_l      = df_dia[df_dia["linia"] == linia]
-        det       = detection[linia]
-        df_l_u    = det["df_l_u"]
-        primer_of     = det["primer_of_inc"]   # primer avís d'incident (no rutinari)
-        hora_of       = det["hora_of_inc"]
-        pre_of        = det["pre_of"]
-        delta_min = det["delta_min"]
-        cand_ofi  = det["cand"].sort_values("hora") if len(det["cand"]) > 0 else det["cand"]
-
-        # Header: nom línia + avantatge inline
-        if delta_min:
-            h, m = divmod(int(delta_min), 60)
-            dt_txt = f"{h}h {m}min" if h > 0 else f"{m}min"
-            dcolor = "#DC143C" if delta_min >= 60 else ("#F59E0B" if delta_min >= 30 else "#10B981")
-            adv_badge = (
-                f"<span style='margin-left:auto;background:{dcolor}22;"
-                f"border:1px solid {dcolor}55;border-radius:20px;padding:3px 12px;"
-                f"font-size:13px;font-weight:700;color:{dcolor}'>"
-                f"{dt_txt} d'avantatge</span>"
-            )
-        else:
-            adv_badge = ""
-
-        st.markdown(
-            f"<div style='display:flex;align-items:center;gap:12px;margin:24px 0 10px;"
-            f"padding:10px 16px;background:linear-gradient(90deg,{lcolor}22 0%,transparent 100%);"
-            f"border-radius:8px;border-left:3px solid {lcolor}'>"
-            f"<span style='font-size:18px;font-weight:800;color:#f1f5f9'>Línia {linia}</span>"
-            f"<span style='font-size:12px;color:#64748b'>"
-            f"{len(df_l)} tweets · {len(pre_of)} usuaris anticipats</span>"
-            f"{adv_badge}</div>",
-            unsafe_allow_html=True,
-        )
-
-        col_tl, col_detail = st.columns([1, 2])
-
-        with col_tl:
-            # Mini-timeline: tweets d'usuari per hora + línia vertical oficial
-            if len(df_l_u) > 0:
-                df_h = df_l_u.copy()
-                df_h["h"] = df_h["hora"].str[:2].apply(
-                    lambda x: int(x) if str(x).isdigit() else -1)
-                hourly = (df_h[df_h["h"] >= 0]
-                          .groupby("h").size().reset_index(name="n"))
-                # Confiança mitjana per hora
-                if "confianza" in df_h.columns:
-                    hconf = (df_h[df_h["h"] >= 0]
-                             .groupby("h")["confianza"].mean()
-                             .reset_index(name="conf"))
-                    hourly = hourly.merge(hconf, on="h", how="left")
-                else:
-                    hourly["conf"] = None
-
-                ofi_h = (int(hora_of[:2])
-                         if hora_of != "99:99" and hora_of[:2].isdigit() else None)
-                bar_colors = [
-                    "#DC143C" if (ofi_h is not None and h >= ofi_h) else lcolor
-                    for h in hourly["h"]
-                ]
-                fig_tl = go.Figure(go.Bar(
-                    x=hourly["h"], y=hourly["n"],
-                    marker_color=bar_colors,
-                    hovertemplate="Hora %{x}h: %{y} tw<extra></extra>",
-                    name="tweets",
-                ))
-                # Línia de confiança mitjana (eix dret)
-                if hourly["conf"].notna().any():
-                    fig_tl.add_trace(go.Scatter(
-                        x=hourly["h"], y=hourly["conf"],
-                        mode="lines+markers",
-                        name="conf. mitjana",
-                        line=dict(color="#F59E0B", width=1.5, dash="dot"),
-                        marker=dict(size=4, color="#F59E0B"),
-                        yaxis="y2",
-                        hovertemplate="Hora %{x}h: conf. %{y:.2f}<extra></extra>",
-                    ))
-                if ofi_h is not None:
-                    fig_tl.add_vline(
-                        x=ofi_h - 0.5, line_dash="dash",
-                        line_color="#DC143C", line_width=2,
-                        annotation_text="↑ oficial",
-                        annotation_font_color="#DC143C",
-                        annotation_font_size=9,
-                        annotation_position="top right",
-                    )
-                fig_tl.update_layout(
-                    height=185,
-                    margin=dict(l=24, r=36, t=28, b=28),
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(color="#94a3b8", size=10),
-                    xaxis=dict(showgrid=False, title="hora", dtick=2),
-                    yaxis=dict(showgrid=True, gridcolor="#1e293b", title="tw"),
-                    yaxis2=dict(
-                        overlaying="y", side="right",
-                        range=[0.70, 1.02], showgrid=False,
-                        tickformat=".2f",
-                        title=dict(text="conf.", font=dict(size=9, color="#F59E0B")),
-                        tickfont=dict(size=8, color="#F59E0B"),
-                    ),
-                    legend=dict(orientation="h", y=1.12, font=dict(size=8)),
-                    title=dict(text="Tweets usuaris/hora · confiança",
-                               font=dict(size=10, color="#64748b"), x=0),
-                )
-                st.plotly_chart(fig_tl, use_container_width=True,
-                                key=f"ce_tl_{dia}_{linia}")
-
-            # Tipus d'incident (mini llista de text, no gràfic)
-            tc = (df_l["tipus_incident"].dropna()
-                  .replace("sin_incidencia", pd.NA).dropna()
-                  .value_counts())
-            if len(tc) > 0:
-                items = "".join(
-                    f"<div style='display:flex;justify-content:space-between;"
-                    f"padding:2px 0;border-bottom:1px solid #1e293b'>"
-                    f"<span style='font-size:11px;color:{TIPO_COLORS.get(t, DEFAULT_COLOR)}'>"
-                    f"● {t}</span>"
-                    f"<span style='font-size:11px;font-weight:700;color:#94a3b8'>{n}</span></div>"
-                    for t, n in tc.items()
-                )
-                st.markdown(
-                    f"<div style='margin-top:8px;padding:8px 10px;background:#0f172a;"
-                    f"border-radius:6px;border:1px solid #1e293b'>"
-                    f"<div style='font-size:9px;color:#475569;text-transform:uppercase;"
-                    f"letter-spacing:1px;margin-bottom:5px'>Tipus d'incident</div>"
-                    f"{items}</div>",
-                    unsafe_allow_html=True,
-                )
-
-        with col_detail:
-            if delta_min:
-                st.markdown(_delta_badge(delta_min), unsafe_allow_html=True)
-
-            # Tweets rellevants (queixes + incidents), tot el dia
-            is_q = (df_l_u["caracter"] == "queixa") if "caracter" in df_l_u.columns \
-                   else pd.Series(False, index=df_l_u.index)
-            is_i = df_l_u["tipus_incident"].notna() & \
-                   ~df_l_u["tipus_incident"].isin(["sin_incidencia", "nan", ""])
-            df_rel = df_l_u[is_q | is_i].dropna(subset=["hora"]).sort_values("hora").reset_index(drop=True)
-
-            # Totes les comunicacions oficials (tots els canals @rod*cat, @rodalies, etc.)
-            ofi_sorted = (cand_ofi.sort_values("hora").reset_index(drop=True)
-                          if len(cand_ofi) > 0 else pd.DataFrame())
-
-            if len(df_rel) == 0:
-                st.caption("Cap tweet de queixa o incident classificat per a aquesta línia.")
-            else:
-                # ── Clustering per gaps de temps (incidents separats al llarg del dia)
-                GAP_MIN = 120
-                clusters = []
-                grp = [0]
-                for i in range(1, len(df_rel)):
-                    try:
-                        t1 = pd.Timestamp(f"{dia} {df_rel.iloc[i-1]['hora'][:5]}")
-                        t2 = pd.Timestamp(f"{dia} {df_rel.iloc[i]['hora'][:5]}")
-                        gap = (t2 - t1).total_seconds() / 60
-                    except Exception:
-                        gap = 0
-                    if gap <= GAP_MIN:
-                        grp.append(i)
-                    else:
-                        clusters.append(df_rel.iloc[grp].reset_index(drop=True))
-                        grp = [i]
-                clusters.append(df_rel.iloc[grp].reset_index(drop=True))
-
-                n_rel  = len(df_rel)
-                n_pre  = len(df_rel[df_rel["hora"] < hora_of]) if hora_of != "99:99" else n_rel
-                conf_m = df_rel["confianza"].dropna().mean() if "confianza" in df_rel.columns else None
-                conf_txt = f" · conf. {conf_m:.2f}" if conf_m is not None else ""
-                st.markdown(
-                    f"<div style='font-size:12px;color:#94a3b8;margin-bottom:10px;line-height:1.7'>"
-                    f"<b style='color:#f1f5f9'>{n_rel} tweets rellevants</b>{conf_txt} · "
-                    f"<b style='color:{lcolor}'>{len(clusters)} incident"
-                    f"{'s' if len(clusters)>1 else ''}</b><br>"
-                    f"<span style='color:{lcolor}'>{n_pre} anteriors al primer avís oficial</span>"
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-
-                used_ofi = set()
-                for ci, cl in enumerate(clusters):
-                    t_s = str(cl.iloc[0]["hora"])[:5]
-                    t_e = str(cl.iloc[-1]["hora"])[:5]
-                    n_cl = len(cl)
-
-                    # Confiança mitjana del cluster
-                    conf_cl = (cl["confianza"].dropna().mean()
-                               if "confianza" in cl.columns else None)
-                    if conf_cl is not None:
-                        cc = ("#10B981" if conf_cl >= 0.90
-                              else ("#F59E0B" if conf_cl >= 0.80 else "#F97316"))
-                        conf_badge = (
-                            f"<span style='margin-left:auto;font-size:11px;"
-                            f"font-weight:700;color:{cc}'>conf. {conf_cl:.2f}</span>"
-                        )
-                    else:
-                        conf_badge = ""
-
-                    # Header de l'incident
-                    st.markdown(
-                        f"<div style='margin:14px 0 5px;padding:6px 12px;"
-                        f"background:{lcolor}18;border-radius:6px;"
-                        f"border-left:3px solid {lcolor};"
-                        f"display:flex;align-items:center'>"
-                        f"<span style='font-size:12px;font-weight:800;color:{lcolor}'>"
-                        f"Incident #{ci+1}</span>"
-                        f"<span style='font-size:11px;color:#64748b'>"
-                        f" · {t_s} – {t_e} · {n_cl} tweets</span>"
-                        f"{conf_badge}"
-                        f"</div>",
-                        unsafe_allow_html=True,
-                    )
-
-                    # Tweets del cluster
-                    cards = "".join(
-                        _tweet_card(r, lcolor, show_confianza=True)
-                        for _, r in cl.head(8).iterrows()
-                    )
-                    if n_cl > 8:
-                        cards += (
-                            f"<div style='font-size:11px;color:#64748b;padding:3px 8px'>"
-                            f"... i {n_cl-8} tweets més</div>"
-                        )
-                    st.markdown(cards, unsafe_allow_html=True)
-
-                    # Comunicació oficial posterior a l'inici del cluster
-                    if len(ofi_sorted) > 0:
-                        matching = ofi_sorted[
-                            (ofi_sorted["hora"] >= t_s) &
-                            (~ofi_sorted.index.isin(used_ofi))
-                        ].head(4)
-                        if len(matching) > 0:
-                            st.markdown(
-                                "<div style='margin:5px 0 3px;font-size:10px;"
-                                "font-weight:700;color:#DC143C;"
-                                "text-transform:uppercase;letter-spacing:1px'>"
-                                "↓ Comunicació oficial</div>",
-                                unsafe_allow_html=True,
-                            )
-                            for idx, r_ofi in matching.iterrows():
-                                st.markdown(_tweet_card(r_ofi, "#DC143C"),
-                                            unsafe_allow_html=True)
-                                used_ofi.add(idx)
-                        else:
-                            st.markdown(
-                                "<div style='font-size:11px;color:#475569;"
-                                "font-style:italic;margin:5px 0;padding:6px 10px;"
-                                "background:#1e293b;border-radius:6px;"
-                                "border-left:2px solid #334155'>"
-                                "Sense comunicació oficial posterior per a aquest incident."
-                                "</div>",
-                                unsafe_allow_html=True,
-                            )
-
-                # Comunicacions oficials no associades a cap cluster
-                if len(ofi_sorted) > 0:
-                    remaining = ofi_sorted[~ofi_sorted.index.isin(used_ofi)]
-                    if len(remaining) > 0:
-                        st.markdown(
-                            f"<div style='margin-top:14px;font-size:11px;font-weight:700;"
-                            f"color:#94a3b8;text-transform:uppercase;letter-spacing:1px;"
-                            f"margin-bottom:4px'>Altres comunicacions oficials ({len(remaining)})</div>",
-                            unsafe_allow_html=True,
-                        )
-                        for _, r_ofi in remaining.iterrows():
-                            st.markdown(_tweet_card(r_ofi, "#DC143C"), unsafe_allow_html=True)
-                elif len(ofi_sorted) == 0:
-                    st.markdown(
-                        "<div style='color:#64748b;font-size:13px;font-style:italic;"
-                        "margin-top:12px'>"
-                        "Cap comunicació oficial trobada per a aquesta línia aquell dia."
-                        "</div>",
-                        unsafe_allow_html=True,
-                    )
-
-    st.divider()
-
-    if bloc_especial:
-        be     = bloc_especial
-        bcolor = be.get("color", "#f59e0b")
-        st.markdown(
-            f"<div style='display:flex;align-items:center;gap:12px;margin:24px 0 12px;"
-            f"padding:10px 16px;background:linear-gradient(90deg,{bcolor}22 0%,transparent 100%);"
-            f"border-radius:8px;border-left:3px solid {bcolor}'>"
-            f"<span style='font-size:18px;font-weight:800;color:#f1f5f9'>{be['titol']}</span>"
-            f"<span style='font-size:12px;color:#64748b'>{be['subtitol']}</span>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-        hora_limit = be.get("hora_limit", "23:59")
-        df_be  = df_dia[
-            df_dia["tweet_text"].str.lower().str.contains(
-                be["kws_regex"], na=False, regex=True)
-        ].sort_values("hora")
-        df_be_u = df_be[~es_oficial.reindex(df_be.index, fill_value=False)]
-        df_be_o = df_be[es_oficial.reindex(df_be.index, fill_value=False)]
-
-        if be.get("delta_mins") is not None:
-            st.markdown(_delta_badge(be["delta_mins"]), unsafe_allow_html=True)
-        else:
-            df_be_u_hl = df_be_u[df_be_u["hora"] <= hora_limit].sort_values("hora")
-            df_be_o_s  = df_be_o.sort_values("hora")
-            if len(df_be_u_hl) > 0 and len(df_be_o_s) > 0:
-                try:
-                    t1 = pd.Timestamp(f"{dia} {df_be_u_hl.iloc[0]['hora'][:5]}")
-                    t2 = pd.Timestamp(f"{dia} {df_be_o_s.iloc[0]['hora'][:5]}")
-                    delta_min = (t2 - t1).total_seconds() / 60
-                    if delta_min > 0:
-                        st.markdown(_delta_badge(delta_min), unsafe_allow_html=True)
-                except Exception:
-                    pass
-
-        bec1, bec2 = st.columns(2)
-        with bec1:
-            st.markdown(
-                "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
-                "text-transform:uppercase;letter-spacing:1px;margin-bottom:6px'>"
-                "Usuaris detecten l'incident</div>",
-                unsafe_allow_html=True,
-            )
-            for _, r in df_be_u[df_be_u["hora"] <= hora_limit].head(8).iterrows():
-                st.markdown(_tweet_card(r, bcolor), unsafe_allow_html=True)
-        with bec2:
-            st.markdown(
-                "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
-                "text-transform:uppercase;letter-spacing:1px;margin-bottom:6px'>"
-                "Comunicació oficial</div>",
-                unsafe_allow_html=True,
-            )
-            for _, r in df_be_o[df_be_o["hora"] <= hora_limit].head(5).iterrows():
-                st.markdown(_tweet_card(r, "#DC143C"), unsafe_allow_html=True)
-
-        st.divider()
-
-    st.subheader("Tweets d'incident sense línia assignada")
-    st.caption("Tweets classificats com a incident (confiança > 0.80) però sense línia detectada")
-    df_sense_linia = df_dia[
-        df_dia["linia"].isna() &
-        df_dia["tipus_incident"].notna() &
-        (df_dia["tipus_incident"] != "sin_incidencia") &
-        (pd.to_numeric(df_dia["confianza"], errors="coerce") >= 0.80)
-    ].sort_values("hora").head(15)
-    if len(df_sense_linia) > 0:
-        for _, r in df_sense_linia.iterrows():
-            tc = TIPO_COLORS.get(str(r.get("tipus_incident", "")), DEFAULT_COLOR)
-            st.markdown(_tweet_card(r, tc, show_confianza=True), unsafe_allow_html=True)
-    else:
-        st.info("No s'han trobat tweets d'incident sense línia assignada.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1363,9 +419,7 @@ with st.sidebar:
         "Pagina",
         ["Inici", "Mapa geografic", "Analisi temporal",
          "Analisi per linies", "Analisi d'incidencies",
-         "Incidencies per linia", "20 Gen — Cas d'Estudi",
-         "20 Gen — Original", "23 Oct — Cas d'Estudi",
-         "13 Feb — Cas d'Estudi", "6 Mar — Cas d'Estudi"],
+         "Incidencies per linia", "20 Gen — Cas d'Estudi"],
         label_visibility="collapsed",
         key="nav_page",
     )
@@ -2409,106 +1463,13 @@ elif page == "Incidencies per linia":
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PAGINA: CAS D'ESTUDI — 20 GENER
+# PAGINA: 20 GENER — CAS D'ESTUDI
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "20 Gen — Cas d'Estudi":
-    _render_cas_estudi(
-        dia="2026-01-20",
-        titol="20 de Gener 2026 — Cas d'Estudi",
-        descripcio_html=(
-            "El 20 de gener de 2026 va ser el dia amb més activitat del dataset: múltiples incidents "
-            "simultanis a R4, R11, R2 i R1 causats per un temporal. Aquesta pàgina analitza per cada "
-            "línia quins usuaris van detectar i comunicar els problemes <b>abans</b> que Rodalies "
-            "ho fes oficialment, i amb quant de temps d'avantatge."
-        ),
-        bloc_especial={
-            "titol":     "R11 / RG1 — Cas de l'Arbre",
-            "subtitol":  "Breda–Maçanet · incident matinal",
-            "kws_regex": r"r11|breda|ma.anet|caldes.*girona|girona.*caldes|figueres.*sants|sants.*figueres",
-            "hora_limit": "10:30",
-            "color":     "#f59e0b",
-            "delta_mins": 141,
-        },
-    )
 
+    DIA = "2026-01-20"
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGINA: CAS D'ESTUDI — 23 OCTUBRE
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "23 Oct — Cas d'Estudi":
-    _render_cas_estudi(
-        dia="2025-10-23",
-        titol="23 d'Octubre 2025 — Cas d'Estudi",
-        descripcio_html=(
-            "El 23 d'octubre de 2025 es van registrar diverses demores i parades a la xarxa de "
-            "Rodalies de Catalunya. Aquesta pàgina analitza, per cada línia, quins usuaris van "
-            "publicar missatges sobre els problemes i si ho van fer <b>abans</b> que els comptes "
-            "oficials de Rodalies informessin de les incidències."
-        ),
-        bloc_especial=None,
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGINA: CAS D'ESTUDI — 13 FEBRER
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "13 Feb — Cas d'Estudi":
-    _render_cas_estudi(
-        dia="2026-02-13",
-        titol="13 de Febrer 2026 — Cas d'Estudi",
-        descripcio_html=(
-            "El 13 de febrer de 2026 la xarxa de Rodalies va patir una doble afectació: "
-            "les seqüeles del descarrilament de Gelida (20 gen) —amb unes 200 limitacions de "
-            "velocitat actives i 71 punts d'obra simultànies— i els efectes de la <b>borrasca Nils</b>, "
-            "considerada la pitjor ventada de la dècada a Catalunya (ratxes &gt;100 km/h). "
-            "Els retards mitjans superaven els 30 minuts, hi havia estacions tancades "
-            "(Malgrat de Mar, Premià de Mar, Barberà del Vallès) i trams sense servei de passatgers: "
-            "R4 Sant Sadurní – Martorell, R3 i R8. "
-            "Amb 1.002 tweets, va ser el dia amb més activitat de tot el dataset."
-        ),
-        bloc_especial={
-            "titol":      "Borrasca Nils — Afectació general a tota la xarxa",
-            "subtitol":   "Vent > 100 km/h · Estacions tancades · Trams sense servei",
-            "kws_regex":  r"nils|temporal|vent|malgrat|prem[iì]|barber[aà]|martorell|sadur|r4.*tall|tall.*r4",
-            "hora_limit": "23:59",
-            "color":      "#F59E0B",
-            "delta_mins": None,
-        },
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGINA: CAS D'ESTUDI — 6 MARÇ
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "6 Mar — Cas d'Estudi":
-    _render_cas_estudi(
-        dia="2026-03-06",
-        titol="6 de Març 2026 — Cas d'Estudi",
-        descripcio_html=(
-            "El 6 de març de 2026, un robatori de coure a La Garriga va provocar retards d'uns "
-            "30 minuts a la línia R3, amb trens truncats a Figaró. "
-            "S'analitza com els usuaris van detectar i reportar la incidència a Twitter "
-            "<b>abans</b> de la comunicació oficial de Rodalies."
-        ),
-        bloc_especial={
-            "titol":     "R3 — Robatori de coure a La Garriga",
-            "subtitol":  "Retard ~30 min · Trens truncats a Figaró",
-            "kws_regex": r"la garriga|figar[oó]|coure|r3.*garr|garr.*r3",
-            "hora_limit": "23:59",
-            "color":     "#DC143C",
-            "delta_mins": None,
-        },
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGINA: 20 GENER — VERSIÓ ORIGINAL (sense clustering, codi del commit inicial)
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "20 Gen — Original":
-
-    DIA20 = "2026-01-20"
-
-    st.title("20 de Gener 2026 — Cas d'Estudi (versió original)")
+    st.title("20 de Gener 2026 — Cas d'Estudi")
     st.markdown(
         "<p style='color:#94a3b8;font-size:0.95rem;margin:-8px 0 20px;line-height:1.7'>"
         "El 20 de gener de 2026 va ser el dia amb més activitat del dataset: múltiples incidents "
@@ -2519,141 +1480,199 @@ elif page == "20 Gen — Original":
         unsafe_allow_html=True,
     )
 
-    df_dia20 = df_master[df_master["date"] == DIA20].copy()
+    df_dia = df_master[df_master["date"] == DIA].copy()
 
-    es_oficial20 = df_dia20["user"].str.lower().str.match(
+    # Comptes oficials: @rodalies exacte, @rod1cat..@rod11cat, @inforodali*, @emergencies*, mèdia
+    # Anclem al principi (@rodalies NO ha de coincidir amb @usuariarodalies)
+    OFICIALS_RE = (
+        r"^@rodalies$|^@rod\d+cat$|^@inforodali|^@emergenci|"
+        r"^@3catinfoviari|^@btvnoticies|^@elnacionalcat|^@adif|^@renfe|^@radiosabd"
+    )
+    es_oficial = df_dia["user"].str.lower().str.match(
         r"@rodalies$|@rod\d+cat|@inforodali|@emergenci|"
         r"@3catinfoviari|@btvnoticies|@elnacionalcat|@adif|@renfe|@radiosabd",
         na=False,
     )
-    df_usr20 = df_dia20[~es_oficial20].copy()
-    df_ofi20 = df_dia20[es_oficial20].copy()
+    df_usr = df_dia[~es_oficial].copy()
+    df_ofi = df_dia[es_oficial].copy()
 
+    # ── Mètriques generals ────────────────────────────────────────────────────
     mc1, mc2, mc3, mc4 = st.columns(4)
-    mc1.metric("Tweets del dia",       f"{len(df_dia20):,}")
-    mc2.metric("Tweets d'usuaris",     f"{len(df_usr20):,}")
-    mc3.metric("Tweets oficials",      f"{len(df_ofi20):,}")
-    mc4.metric("Línies amb activitat", df_dia20["linia"].dropna().nunique())
+    mc1.metric("Tweets del dia",       f"{len(df_dia):,}")
+    mc2.metric("Tweets d'usuaris",     f"{len(df_usr):,}")
+    mc3.metric("Tweets oficials",      f"{len(df_ofi):,}")
+    mc4.metric("Línies amb activitat", df_dia["linia"].dropna().nunique())
     st.divider()
 
+    # ── Gràfic resum: tweets per línia ───────────────────────────────────────
     st.subheader("Activitat per línia")
-    linia_counts20 = (
-        df_dia20["linia"].dropna()
-        .value_counts().reset_index()
+    linia_counts = (
+        df_dia["linia"].dropna()
+        .value_counts()
+        .reset_index()
         .rename(columns={"linia": "linia", "count": "n"})
         .sort_values("n", ascending=True)
     )
-    linia_counts20["color"] = linia_counts20["linia"].map(LINE_COLORS).fillna(DEFAULT_COLOR)
-    fig_ov20 = go.Figure(go.Bar(
-        x=linia_counts20["n"], y=linia_counts20["linia"],
+    linia_counts["color"] = linia_counts["linia"].map(LINE_COLORS).fillna(DEFAULT_COLOR)
+    fig_ov = go.Figure(go.Bar(
+        x=linia_counts["n"], y=linia_counts["linia"],
         orientation="h",
-        marker_color=linia_counts20["color"].tolist(),
-        text=linia_counts20["n"], textposition="outside",
+        marker_color=linia_counts["color"].tolist(),
+        text=linia_counts["n"], textposition="outside",
         hovertemplate="<b>%{y}</b>: %{x} tweets<extra></extra>",
     ))
-    fig_ov20.update_layout(
+    fig_ov.update_layout(
         height=280, margin=dict(l=60, r=60, t=10, b=10),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
         font=dict(color="#94a3b8"),
     )
-    st.plotly_chart(fig_ov20, use_container_width=True, key="orig20_ov")
+    st.plotly_chart(fig_ov, use_container_width=True)
     st.divider()
 
-    INC_KWS20 = (r"incid[eè]|interromp|tall|retard|demora|no circula|"
-                 r"afectaci|aturad|suprim|alternatiu|arbre|mur|caiguda|temporal")
+    # ── Helpers ───────────────────────────────────────────────────────────────
+    def _tweet_card(row, border_color, show_confianza=False):
+        conf_txt = (f" · conf. {row.get('confianza', 0):.2f}"
+                    if show_confianza and pd.notna(row.get("confianza")) else "")
+        tipus_val = str(row.get("tipus_incident", ""))
+        tipus_txt = (
+            f" &nbsp;<span style='background:{TIPO_COLORS.get(tipus_val, DEFAULT_COLOR)}33;"
+            f"color:{TIPO_COLORS.get(tipus_val, DEFAULT_COLOR)};font-weight:700;"
+            f"font-size:11px;padding:1px 7px;border-radius:10px'>{tipus_val}</span>"
+            if pd.notna(row.get("tipus_incident")) and tipus_val not in ("sin_incidencia", "nan", "")
+            else ""
+        )
+        return (
+            f"<div style='padding:12px 16px;margin-bottom:8px;background:#0f172a;"
+            f"border-radius:8px;border-left:4px solid {border_color}'>"
+            f"<div style='display:flex;align-items:center;gap:8px;margin-bottom:6px'>"
+            f"<span style='font-size:14px;font-weight:700;color:#f1f5f9'>"
+            f"{str(row.get('hora',''))[:5]}</span>"
+            f"<span style='font-size:12px;color:#64748b'>{row.get('user','')}{conf_txt}</span>"
+            f"{tipus_txt}</div>"
+            f"<div style='font-size:13px;color:#cbd5e1;line-height:1.6'>"
+            f"{str(row.get('tweet_text',''))[:350]}</div>"
+            f"</div>"
+        )
 
-    linies20 = df_dia20["linia"].dropna().value_counts().index.tolist()
+    def _delta_badge(mins):
+        if mins <= 0:
+            return ""
+        h, m = divmod(int(mins), 60)
+        txt   = f"{h}h {m}min" if h > 0 else f"{m}min"
+        color = "#DC143C" if mins >= 60 else ("#F59E0B" if mins >= 30 else "#10B981")
+        return (
+            f"<div style='display:inline-flex;align-items:center;gap:8px;"
+            f"background:{color}22;border:1px solid {color}55;border-radius:20px;"
+            f"padding:4px 14px;margin:10px 0'>"
+            f"<span style='font-size:13px;font-weight:700;color:{color}'>"
+            f"Detecció anticipada: {txt} abans</span></div>"
+        )
 
-    for linia in linies20:
+    # ── Bucle per cada línia ──────────────────────────────────────────────────
+    linies_actives = (
+        df_dia["linia"].dropna().value_counts()
+        .index.tolist()
+    )
+
+    for linia in linies_actives:
         lcolor = LINE_COLORS.get(linia, DEFAULT_COLOR)
-        df_l20   = df_dia20[df_dia20["linia"] == linia]
-        df_l_u20 = df_usr20[df_usr20["linia"] == linia].sort_values("hora")
-        df_l_o20 = df_ofi20[df_ofi20["linia"] == linia].sort_values("hora")
+        df_l   = df_dia[df_dia["linia"] == linia]
+        df_l_u = df_usr[df_usr["linia"] == linia].sort_values("hora")
+        df_l_o = df_ofi[df_ofi["linia"] == linia].sort_values("hora")
 
+        # Header de línia
         st.markdown(
             f"<div style='display:flex;align-items:center;gap:12px;margin:24px 0 12px;"
             f"padding:10px 16px;background:linear-gradient(90deg,{lcolor}22 0%,transparent 100%);"
             f"border-radius:8px;border-left:3px solid {lcolor}'>"
             f"<span style='font-size:18px;font-weight:800;color:#f1f5f9'>Línia {linia}</span>"
-            f"<span style='font-size:12px;color:#64748b'>{len(df_l20)} tweets el 20 gen</span>"
+            f"<span style='font-size:12px;color:#64748b'>{len(df_l)} tweets el 20 gen</span>"
             f"</div>",
             unsafe_allow_html=True,
         )
 
-        col_chart20, col_detail20 = st.columns([1, 2])
+        col_chart, col_detail = st.columns([1, 2])
 
-        with col_chart20:
-            tc20 = (df_l20["tipus_incident"].dropna()
-                    .replace("sin_incidencia", pd.NA).dropna()
-                    .value_counts().reset_index()
-                    .rename(columns={"tipus_incident": "t", "count": "n"}))
-            if len(tc20) > 0:
-                tc20["color"] = tc20["t"].map(TIPO_COLORS).fillna(DEFAULT_COLOR)
-                fig_tc20 = go.Figure(go.Bar(
-                    x=tc20["n"], y=tc20["t"], orientation="h",
-                    marker_color=tc20["color"].tolist(),
-                    text=tc20["n"], textposition="outside",
+        with col_chart:
+            # Distribució tipus incident
+            tc = (df_l["tipus_incident"].dropna()
+                  .replace("sin_incidencia", pd.NA).dropna()
+                  .value_counts().reset_index()
+                  .rename(columns={"tipus_incident": "t", "count": "n"}))
+            if len(tc) > 0:
+                tc["color"] = tc["t"].map(TIPO_COLORS).fillna(DEFAULT_COLOR)
+                fig_tc = go.Figure(go.Bar(
+                    x=tc["n"], y=tc["t"], orientation="h",
+                    marker_color=tc["color"].tolist(),
+                    text=tc["n"], textposition="outside",
                 ))
-                fig_tc20.update_layout(
-                    height=max(150, len(tc20) * 40 + 60),
+                fig_tc.update_layout(
+                    height=max(150, len(tc) * 40 + 60),
                     margin=dict(l=100, r=50, t=5, b=5),
                     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                     font=dict(color="#94a3b8", size=11),
                     xaxis=dict(showgrid=False),
                 )
-                st.plotly_chart(fig_tc20, use_container_width=True,
-                                key=f"orig20_tc_{linia}")
+                st.plotly_chart(fig_tc, use_container_width=True)
             else:
                 st.caption("Sense incidents classificats")
 
-        with col_detail20:
-            df_ofi_all20 = df_ofi20.sort_values("hora")
-            cand20 = df_l_o20[df_l_o20["tweet_text"].str.lower().str.contains(
-                INC_KWS20, na=False, regex=True)]
-            if len(cand20) == 0:
-                cand20 = df_ofi_all20[
-                    df_ofi_all20["tweet_text"].str.contains(linia, case=False, na=False) &
-                    df_ofi_all20["tweet_text"].str.lower().str.contains(
-                        INC_KWS20, na=False, regex=True)
+        with col_detail:
+            INC_KWS = (r"incid[eè]|interromp|tall|retard|demora|no circula|"
+                       r"afectaci|aturad|suprim|alternatiu|arbre|mur|caiguda|temporal")
+            # Tots els tweets oficials del dia (no filtrats per linia)
+            df_ofi_all = df_ofi.sort_values("hora")
+            # Intent 1: línia assignada + paraules d'incident
+            cand = df_l_o[df_l_o["tweet_text"].str.lower().str.contains(INC_KWS, na=False, regex=True)]
+            # Intent 2: menciona el codi de línia al text + paraules d'incident
+            if len(cand) == 0:
+                cand = df_ofi_all[
+                    df_ofi_all["tweet_text"].str.contains(linia, case=False, na=False) &
+                    df_ofi_all["tweet_text"].str.lower().str.contains(INC_KWS, na=False, regex=True)
                 ]
-            if len(cand20) == 0:
-                cand20 = df_l_o20
-            primer_of20 = cand20.sort_values("hora").iloc[0] if len(cand20) > 0 else None
-            hora_of20   = primer_of20["hora"][:5] if primer_of20 is not None else "99:99"
-            pre_of20    = df_l_u20[df_l_u20["hora"] < hora_of20]
+            # Intent 3: qualsevol tweet oficial amb paraules d'incident (sense filtre de línia)
+            if len(cand) == 0:
+                cand = df_l_o  # fallback: primer tweet oficial assignat a la línia
+            primer_of = cand.sort_values("hora").iloc[0] if len(cand) > 0 else None
+            hora_of   = primer_of["hora"][:5] if primer_of is not None else "99:99"
 
-            if len(pre_of20) > 0:
+            # Tweets d'usuari ABANS del primer oficial (tots)
+            pre_of = df_l_u[df_l_u["hora"] < hora_of]
+
+            if len(pre_of) > 0:
                 st.markdown(
-                    "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
-                    "text-transform:uppercase;letter-spacing:1px;margin-bottom:6px'>"
-                    "Usuaris abans de l'avís oficial</div>",
+                    f"<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+                    f"text-transform:uppercase;letter-spacing:1px;margin-bottom:6px'>"
+                    f"Usuaris abans de l'avís oficial</div>",
                     unsafe_allow_html=True,
                 )
-                st.markdown(
-                    "".join(_tweet_card(r, lcolor, show_confianza=True)
-                            for _, r in pre_of20.iterrows()),
-                    unsafe_allow_html=True,
-                )
+                cards = "".join(_tweet_card(r, lcolor, show_confianza=True)
+                                for _, r in pre_of.iterrows())
+                st.markdown(cards, unsafe_allow_html=True)
             else:
                 st.caption("Sense tweets d'usuari anteriors a l'avís oficial.")
 
-            if primer_of20 is not None:
-                if len(pre_of20) > 0:
+            if primer_of is not None:
+                # Calcular delta entre primer usuari i primer oficial
+                if len(pre_of) > 0:
                     try:
-                        t1 = pd.Timestamp(f"2026-01-20 {pre_of20.iloc[0]['hora'][:5]}")
-                        t2 = pd.Timestamp(f"2026-01-20 {hora_of20}")
-                        dm = (t2 - t1).total_seconds() / 60
-                        if dm > 0:
-                            st.markdown(_delta_badge(dm), unsafe_allow_html=True)
+                        h1 = pre_of.iloc[0]["hora"][:5]
+                        h2 = hora_of
+                        t1 = pd.Timestamp(f"2026-01-20 {h1}")
+                        t2 = pd.Timestamp(f"2026-01-20 {h2}")
+                        delta_min = (t2 - t1).total_seconds() / 60
+                        if delta_min > 0:
+                            st.markdown(_delta_badge(delta_min), unsafe_allow_html=True)
                     except Exception:
                         pass
+
                 st.markdown(
-                    "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
-                    "text-transform:uppercase;letter-spacing:1px;margin:8px 0 4px'>"
-                    "Primera comunicació oficial (@rodalies)</div>",
+                    f"<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+                    f"text-transform:uppercase;letter-spacing:1px;margin:8px 0 4px'>"
+                    f"Primera comunicació oficial (@rodalies)</div>",
                     unsafe_allow_html=True,
                 )
-                st.markdown(_tweet_card(primer_of20, "#DC143C"), unsafe_allow_html=True)
+                st.markdown(_tweet_card(primer_of, "#DC143C"), unsafe_allow_html=True)
             else:
                 st.markdown(
                     "<div style='color:#64748b;font-size:13px;font-style:italic;margin-top:12px'>"
@@ -2664,7 +1683,7 @@ elif page == "20 Gen — Original":
 
     st.divider()
 
-    # Bloc especial R11
+    # ── Bloc especial R11 ─────────────────────────────────────────────────────
     st.markdown(
         "<div style='display:flex;align-items:center;gap:12px;margin:24px 0 12px;"
         "padding:10px 16px;background:linear-gradient(90deg,#f59e0b22 0%,transparent 100%);"
@@ -2675,13 +1694,13 @@ elif page == "20 Gen — Original":
         unsafe_allow_html=True,
     )
     r11_kws = r"r11|breda|ma.anet|caldes.*girona|girona.*caldes|figueres.*sants|sants.*figueres"
-    df_r11 = df_dia20[
-        df_dia20["tweet_text"].str.lower().str.contains(r11_kws, na=False, regex=True)
+    df_r11 = df_dia[
+        df_dia["tweet_text"].str.lower().str.contains(r11_kws, na=False, regex=True)
     ].sort_values("hora")
-    df_r11_u = df_r11[~es_oficial20.reindex(df_r11.index, fill_value=False)]
-    df_r11_o = df_r11[es_oficial20.reindex(df_r11.index, fill_value=False)]
+    df_r11_u = df_r11[~es_oficial.reindex(df_r11.index, fill_value=False)]
+    df_r11_o = df_r11[es_oficial.reindex(df_r11.index, fill_value=False)]
 
-    st.markdown(_delta_badge(141), unsafe_allow_html=True)
+    st.markdown(_delta_badge(141), unsafe_allow_html=True)  # 2h 21min = 141 min
 
     r11c1, r11c2 = st.columns(2)
     with r11c1:
@@ -2693,6 +1712,7 @@ elif page == "20 Gen — Original":
         )
         for _, r in df_r11_u[df_r11_u["hora"] <= "10:30"].head(8).iterrows():
             st.markdown(_tweet_card(r, "#f59e0b"), unsafe_allow_html=True)
+
     with r11c2:
         st.markdown(
             "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
@@ -2705,16 +1725,17 @@ elif page == "20 Gen — Original":
 
     st.divider()
 
+    # ── Tweets rellevants sense línia assignada ───────────────────────────────
     st.subheader("Tweets d'incident sense línia assignada")
     st.caption("Tweets classificats com a incident (confiança > 0.80) però sense línia detectada")
-    df_sl20 = df_dia20[
-        df_dia20["linia"].isna() &
-        df_dia20["tipus_incident"].notna() &
-        (df_dia20["tipus_incident"] != "sin_incidencia") &
-        (pd.to_numeric(df_dia20["confianza"], errors="coerce") >= 0.80)
+    df_sense_linia = df_dia[
+        df_dia["linia"].isna() &
+        df_dia["tipus_incident"].notna() &
+        (df_dia["tipus_incident"] != "sin_incidencia") &
+        (pd.to_numeric(df_dia["confianza"], errors="coerce") >= 0.80)
     ].sort_values("hora").head(15)
-    if len(df_sl20) > 0:
-        for _, r in df_sl20.iterrows():
+    if len(df_sense_linia) > 0:
+        for _, r in df_sense_linia.iterrows():
             tc = TIPO_COLORS.get(str(r.get("tipus_incident", "")), DEFAULT_COLOR)
             st.markdown(_tweet_card(r, tc, show_confianza=True), unsafe_allow_html=True)
     else:
