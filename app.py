@@ -1,6 +1,6 @@
 """
-TFG — Rodalies de Catalunya: Deteccio precoç d'incidencies via Twitter
-App de visualitzacio amb Streamlit
+TFG — Rodalies de Catalunya: Detecció precoç d'incidències via Twitter
+App de visualització amb Streamlit
 """
 
 import os
@@ -15,8 +15,11 @@ from folium.plugins import HeatMap, MarkerCluster
 from streamlit_folium import st_folium
 import plotly.express as px
 import plotly.graph_objects as go
+import plotly.io as pio
 import pydeck as pdk
 import json
+
+pio.templates.default = "plotly_white"
 
 DATA_START = "2025-08-01"
 CAL_MIN    = datetime.date(2025, 8, 1)
@@ -165,7 +168,7 @@ def load_incidents(_file_mtime_inc):
     df_i = (df_i.sort_values("_rank")
                 .drop_duplicates(subset=["id"], keep="first")
                 .drop(columns="_rank"))
-    return df_i[df_i["date"] >= DATA_START].reset_index(drop=True)
+    return df_i.reset_index(drop=True)
 
 
 @st.cache_data
@@ -244,14 +247,15 @@ def _tweet_card(row, border_color, show_confianza=False):
         else ""
     )
     return (
-        f"<div style='padding:12px 16px;margin-bottom:8px;background:#0f172a;"
-        f"border-radius:8px;border-left:4px solid {border_color}'>"
+        f"<div style='padding:12px 16px;margin-bottom:8px;background:#f8fafc;"
+        f"border-radius:8px;border-left:4px solid {border_color};"
+        f"border:1px solid #e2e8f0;border-left:4px solid {border_color}'>"
         f"<div style='display:flex;align-items:center;gap:8px;margin-bottom:6px'>"
-        f"<span style='font-size:14px;font-weight:700;color:#f1f5f9'>"
+        f"<span style='font-size:14px;font-weight:700;color:#0f172a'>"
         f"{str(row.get('hora',''))[:5]}</span>"
         f"<span style='font-size:12px;color:#64748b'>{row.get('user','')}{conf_txt}</span>"
         f"{tipus_txt}</div>"
-        f"<div style='font-size:13px;color:#cbd5e1;line-height:1.6'>"
+        f"<div style='font-size:13px;color:#334155;line-height:1.6'>"
         f"{str(row.get('tweet_text',''))[:350]}</div>"
         f"</div>"
     )
@@ -272,10 +276,12 @@ def _delta_badge(mins):
     )
 
 
-def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
+def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None,
+                        excloure_linies=None, linia_rename_display=None,
+                        linies_extra_usuari=None, evidencia_override=None):
     st.title(titol)
     st.markdown(
-        f"<p style='color:#94a3b8;font-size:0.95rem;margin:-8px 0 20px;line-height:1.7'>"
+        f"<p style='color:#475569;font-size:0.95rem;margin:-8px 0 20px;line-height:1.7'>"
         f"{descripcio_html}</p>",
         unsafe_allow_html=True,
     )
@@ -283,7 +289,7 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
     df_dia = df_master[df_master["date"] == dia].copy()
 
     es_oficial = df_dia["user"].str.lower().str.match(
-        r"@rodalies$|@rod\d+cat|@inforodali|@emergenci|"
+        r"@rodalies$|@rod\w+cat|@inforodali|@emergenci|"
         r"@3catinfo|@btvnoticies|@elnacionalcat|@adif|@renfe|@inforenfe|@radiosabd",
         na=False,
     )
@@ -295,17 +301,29 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
                r"afectaci|aturad|suprim|alternatiu|arbre|mur|caiguda|temporal")
 
     linies_actives = df_dia["linia"].dropna().value_counts().index.tolist()
+    if excloure_linies:
+        linies_actives = [l for l in linies_actives if l not in excloure_linies]
     df_ofi_all = df_ofi.sort_values("hora")
+
+    def _disp(l):
+        return (linia_rename_display or {}).get(l, l)
 
     # ── Pre-càlcul detecció anticipada per línia ──────────────────────────────
     LINE_ACCOUNT = {
-        "R1": "rod1cat", "R2": "rod2cat", "R2N": "rod2cat", "R2S": "rod2cat",
+        "R1": "rod1cat", "R2": "rod2cat", "R2N": "rod2nordcat", "R2S": "rod2sudcat",
         "R3": "rod3cat", "R4": "rod4cat", "R7": "rod7cat", "R8": "rod8cat",
     }
 
     def _det(linia):
-        df_l_u = df_usr[df_usr["linia"] == linia].sort_values("hora")
-        df_l_o = df_ofi[df_ofi["linia"] == linia]
+        # Tweets d'usuari: línia assignada O mencions al text
+        df_l_u_dir = df_usr[df_usr["linia"] == linia]
+        df_l_u_text = df_usr[df_usr["tweet_text"].str.contains(linia, case=False, na=False)]
+        df_l_u = pd.concat([df_l_u_dir, df_l_u_text]).drop_duplicates(subset=["tweet_id"]).sort_values("hora")
+
+        # Tweets oficials: línia assignada O mencions al text
+        df_l_o_dir = df_ofi[df_ofi["linia"] == linia]
+        df_l_o_text = df_ofi[df_ofi["tweet_text"].str.contains(linia, case=False, na=False)]
+        df_l_o = pd.concat([df_l_o_dir, df_l_o_text]).drop_duplicates(subset=["tweet_id"])
 
         # Compte oficial específic de la línia (ex: @rod1cat per R1)
         rod_acc = LINE_ACCOUNT.get(linia)
@@ -327,10 +345,12 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
         primer_of = cand.iloc[0] if len(cand) > 0 else None
         hora_of   = primer_of["hora"][:5] if primer_of is not None else "99:99"
 
-        # hora_of_inc: primer tweet oficial AMB keywords d'incident
-        # → llindar real per a pre/post i estadística
-        cand_inc = cand[cand["tweet_text"].str.lower().str.contains(
-            INC_KWS, na=False, regex=True)]
+        # hora_of_inc: primer tweet oficial AMB incident real
+        # Buscar per keywords en text O per tipus_incident classificat
+        has_kws = cand["tweet_text"].str.lower().str.contains(INC_KWS, na=False, regex=True)
+        has_tipo = (cand["tipus_incident"].notna() &
+                    ~cand["tipus_incident"].isin(["sin_incidencia", "nan", ""]))
+        cand_inc = cand[has_kws | has_tipo]
         primer_of_inc = cand_inc.iloc[0] if len(cand_inc) > 0 else None
         hora_of_inc   = primer_of_inc["hora"][:5] if primer_of_inc is not None else "99:99"
 
@@ -371,16 +391,42 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
     pct_high = float((pre_conf_all > 0.80).mean() * 100) if len(pre_conf_all) > 0 else None
 
     m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Tweets del dia",    f"{len(df_dia):,}")
-    m2.metric("Tweets d'incident", f"{n_incidents:,}")
-    m3.metric("Línies afectades",  df_dia["linia"].dropna().nunique())
-    if max_delta:
-        hd, md = divmod(int(max_delta), 60)
-        m4.metric("Màxima ventaja", f"{hd}h {md}min" if hd > 0 else f"{md} min")
-    else:
-        m4.metric("Màxima ventaja", "—")
-    m5.metric("% pre-ofic. conf > 0.80",
-              f"{pct_high:.0f}%" if pct_high is not None else "—")
+    with m1:
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:10px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;font-weight:700'>Tweets del dia</div>"
+            f"<div style='font-size:18px;font-weight:400;color:#334155'>{len(df_dia):,}</div>"
+            f"</div>", unsafe_allow_html=True)
+    with m2:
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:10px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;font-weight:700'>Tweets incident</div>"
+            f"<div style='font-size:18px;font-weight:400;color:#334155'>{n_incidents:,}</div>"
+            f"</div>", unsafe_allow_html=True)
+    with m3:
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:10px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;font-weight:700'>Línies</div>"
+            f"<div style='font-size:18px;font-weight:400;color:#334155'>{df_dia['linia'].dropna().nunique()}</div>"
+            f"</div>", unsafe_allow_html=True)
+    with m4:
+        if max_delta:
+            hd, md = divmod(int(max_delta), 60)
+            delta_txt = f"{hd}h {md}min" if hd > 0 else f"{md}min"
+        else:
+            delta_txt = "—"
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:10px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;font-weight:700'>Màx aventatge</div>"
+            f"<div style='font-size:18px;font-weight:400;color:#334155'>{delta_txt}</div>"
+            f"</div>", unsafe_allow_html=True)
+    with m5:
+        pct_txt = f"{pct_high:.0f}%" if pct_high is not None else "—"
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:10px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;font-weight:700'>% conf > 0.80</div>"
+            f"<div style='font-size:18px;font-weight:400;color:#334155'>{pct_txt}</div>"
+            f"</div>", unsafe_allow_html=True)
     st.divider()
 
     # ── Timeline Gantt + Ranking ──────────────────────────────────────────────
@@ -395,7 +441,7 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
 
     with col_gantt:
         st.markdown(
-            "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+            "<div style='font-size:11px;font-weight:700;color:#475569;"
             "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>"
             "Timeline: primer tweet usuari vs avís oficial</div>",
             unsafe_allow_html=True,
@@ -404,20 +450,21 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
         gantt_ann    = []
         linies_gantt = []
         for linia in linies_actives:
-            det      = detection[linia]
-            n_pre_g  = len(det["pre_of"])
-            h_usr_s  = det["pre_of"].iloc[0]["hora"][:5] if n_pre_g > 0 else None
-            h_ofi_s  = det["hora_of_inc"] if det["hora_of_inc"] != "99:99" else None
+            det        = detection[linia]
+            dlinia     = _disp(linia)
+            n_pre_g    = len(det["pre_of"])
+            h_usr_s    = det["pre_of"].iloc[0]["hora"][:5] if n_pre_g > 0 else None
+            h_ofi_s    = det["hora_of_inc"] if det["hora_of_inc"] != "99:99" else None
             if h_usr_s is None and h_ofi_s is None:
                 continue
-            linies_gantt.append(linia)
-            lcolor = LINE_COLORS.get(linia, DEFAULT_COLOR)
+            linies_gantt.append(dlinia)
+            lcolor  = LINE_COLORS.get(linia, DEFAULT_COLOR)
             h_usr_f = _h(h_usr_s)
             h_ofi_f = _h(h_ofi_s)
-            first_l = (linia == linies_gantt[0])
+            first_l = (dlinia == linies_gantt[0])
             if h_usr_f is not None and h_ofi_f is not None:
                 gantt_traces.append(go.Scatter(
-                    x=[h_usr_f, h_ofi_f], y=[linia, linia],
+                    x=[h_usr_f, h_ofi_f], y=[dlinia, dlinia],
                     mode="lines", line=dict(color=lcolor, width=2),
                     showlegend=False, hoverinfo="skip",
                 ))
@@ -425,40 +472,61 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
                     hh, mm = divmod(int(det["delta_min"]), 60)
                     lbl = f"+{hh}h {mm}min" if hh > 0 else f"+{mm}min"
                     gantt_ann.append(dict(
-                        x=(h_usr_f + h_ofi_f) / 2, y=linia,
+                        x=(h_usr_f + h_ofi_f) / 2, y=dlinia,
                         text=lbl, showarrow=False,
-                        font=dict(size=9, color="#94a3b8"), yshift=13,
+                        font=dict(size=9, color="#475569"), yshift=13,
                     ))
             if h_usr_f is not None:
                 gantt_traces.append(go.Scatter(
-                    x=[h_usr_f], y=[linia],
+                    x=[h_usr_f], y=[dlinia],
                     mode="markers+text",
                     marker=dict(color="#7dd3fc", size=11),
                     text=[h_usr_s], textposition="bottom center",
                     textfont=dict(size=8, color="#7dd3fc"),
                     name="Primer tweet usuari", legendgroup="usr",
                     showlegend=first_l,
-                    hovertemplate=f"<b>{linia}</b> usuari: {h_usr_s}<extra></extra>",
+                    hovertemplate=f"<b>{dlinia}</b> usuari: {h_usr_s}<extra></extra>",
                 ))
             if h_ofi_f is not None:
                 gantt_traces.append(go.Scatter(
-                    x=[h_ofi_f], y=[linia],
+                    x=[h_ofi_f], y=[dlinia],
                     mode="markers+text",
                     marker=dict(color="#f87171", size=11),
                     text=[h_ofi_s], textposition="bottom center",
                     textfont=dict(size=8, color="#f87171"),
                     name="Primer avís oficial", legendgroup="ofi",
                     showlegend=first_l,
-                    hovertemplate=f"<b>{linia}</b> oficial: {h_ofi_s}<extra></extra>",
+                    hovertemplate=f"<b>{dlinia}</b> oficial: {h_ofi_s}<extra></extra>",
                 ))
+        # Extra: línies amb detecció d'usuari però sense resposta oficial
+        for linia_ex in (linies_extra_usuari or []):
+            if linia_ex in detection:
+                det_ex   = detection[linia_ex]
+                df_lu_ex = det_ex["df_l_u"]
+                if len(df_lu_ex) > 0:
+                    h_usr_s_ex = df_lu_ex.iloc[0]["hora"][:5]
+                    h_usr_f_ex = _h(h_usr_s_ex)
+                    if h_usr_f_ex is not None:
+                        linies_gantt.append(linia_ex)
+                        gantt_traces.append(go.Scatter(
+                            x=[h_usr_f_ex], y=[linia_ex],
+                            mode="markers+text",
+                            marker=dict(color="#7dd3fc", size=11),
+                            text=[h_usr_s_ex], textposition="bottom center",
+                            textfont=dict(size=8, color="#7dd3fc"),
+                            name="Primer tweet usuari", legendgroup="usr",
+                            showlegend=False,
+                            hovertemplate=f"<b>{linia_ex}</b> usuari: {h_usr_s_ex}"
+                                          f" (sense avís oficial)<extra></extra>",
+                        ))
         fig_gantt = go.Figure(data=gantt_traces)
         fig_gantt.update_layout(
             height=max(200, len(linies_gantt) * 52 + 80),
             margin=dict(l=20, r=20, t=20, b=50),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#94a3b8", size=10),
+            font=dict(color="#334155", size=10),
             xaxis=dict(title="Hora del dia", range=[0, 24], dtick=2,
-                       showgrid=True, gridcolor="#1e293b"),
+                       showgrid=True, gridcolor="#e2e8f0"),
             yaxis=dict(showgrid=False),
             legend=dict(orientation="h", y=1.08),
             annotations=gantt_ann,
@@ -467,9 +535,9 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
 
     with col_rank:
         st.markdown(
-            "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+            "<div style='font-size:11px;font-weight:700;color:#475569;"
             "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>"
-            "Rànquing: ventaja temporal (minuts)</div>",
+            "Rànquing: avantatge temporal (minuts)</div>",
             unsafe_allow_html=True,
         )
         rank_data = sorted(
@@ -479,11 +547,12 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
         )
         if rank_data:
             rk_l, rk_d = zip(*rank_data)
-            rk_c = [LINE_COLORS.get(l, DEFAULT_COLOR) for l in rk_l]
-            rk_t = [f"+{int(d//60)}h {int(d%60)}min" if d >= 60 else f"+{int(d)}min"
-                    for d in rk_d]
+            rk_c   = [LINE_COLORS.get(l, DEFAULT_COLOR) for l in rk_l]
+            rk_t   = [f"+{int(d//60)}h {int(d%60)}min" if d >= 60 else f"+{int(d)}min"
+                      for d in rk_d]
+            rk_l_d = [_disp(l) for l in rk_l]
             fig_rank = go.Figure(go.Bar(
-                x=list(rk_d), y=list(rk_l), orientation="h",
+                x=list(rk_d), y=rk_l_d, orientation="h",
                 marker_color=rk_c, text=rk_t, textposition="outside",
                 hovertemplate="<b>%{y}</b>: %{x:.0f} min<extra></extra>",
             ))
@@ -491,8 +560,8 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
                 height=max(200, len(rank_data) * 52 + 80),
                 margin=dict(l=20, r=80, t=20, b=50),
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#94a3b8", size=10),
-                xaxis=dict(showgrid=True, gridcolor="#1e293b", title="min"),
+                font=dict(color="#334155", size=10),
+                xaxis=dict(showgrid=True, gridcolor="#e2e8f0", title="min"),
                 yaxis=dict(showgrid=False),
             )
             st.plotly_chart(fig_rank, use_container_width=True, key=f"ce_rank_{dia}")
@@ -503,53 +572,72 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
 
     # ── Taula d'evidència semafòrica ──────────────────────────────────────────
     st.markdown(
-        "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+        "<div style='font-size:11px;font-weight:700;color:#475569;"
         "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>"
         "Taula d'evidència per línia</div>",
         unsafe_allow_html=True,
     )
-    evid_rows = []
-    for linia in linies_actives:
-        det     = detection[linia]
-        n_pre_e = len(det["pre_of"])
-        has_ofi = det["hora_of_inc"] != "99:99"
-        delta_e = det["delta_min"]
-        pre_c_e = (det["pre_of"]["confianza"].dropna()
-                   if "confianza" in det["pre_of"].columns else pd.Series())
-        conf_pre = f"{pre_c_e.mean():.3f}" if len(pre_c_e) > 0 else "—"
-        pct_80_e = f"{(pre_c_e > 0.80).mean()*100:.0f}%" if len(pre_c_e) > 0 else "—"
-        if n_pre_e > 0 and has_ofi and delta_e and delta_e > 0:
-            estat = "🟢 Detecció precoç"
-        elif n_pre_e > 0 and not has_ofi:
-            estat = "🟡 Senyal social sense avís oficial"
-        elif n_pre_e == 0 and has_ofi:
-            estat = "⬜ Sense detecció social prèvia"
-        else:
-            estat = "⬜ Sense dades suficients"
-        h_usr_e = det["pre_of"].iloc[0]["hora"][:5] if n_pre_e > 0 else "—"
-        h_ofi_e = det["hora_of_inc"] if has_ofi else "—"
-        if delta_e:
-            hh_e, mm_e = divmod(int(delta_e), 60)
-            delta_str_e = f"+{hh_e}h {mm_e}min" if hh_e > 0 else f"+{mm_e}min"
-        else:
-            delta_str_e = "—"
-        evid_rows.append({
-            "Línia":         linia,
-            "Primer usuari": h_usr_e,
-            "Primer oficial":h_ofi_e,
-            "Ventaja":       delta_str_e,
-            "n pre":         n_pre_e,
-            "Conf. pre":     conf_pre,
-            "% conf > 0.80": pct_80_e,
-            "Estat":         estat,
-        })
+    if evidencia_override is not None:
+        evid_rows = list(evidencia_override)
+    else:
+        evid_rows = []
+        for linia in linies_actives:
+            det     = detection[linia]
+            n_pre_e = len(det["pre_of"])
+            has_ofi = det["hora_of_inc"] != "99:99"
+            delta_e = det["delta_min"]
+            pre_c_e = (det["pre_of"]["confianza"].dropna()
+                       if "confianza" in det["pre_of"].columns else pd.Series())
+            conf_pre = f"{pre_c_e.mean():.3f}" if len(pre_c_e) > 0 else "—"
+            pct_80_e = f"{(pre_c_e > 0.80).mean()*100:.0f}%" if len(pre_c_e) > 0 else "—"
+            if n_pre_e > 0 and has_ofi and delta_e and delta_e > 0:
+                estat = "🟢 Detecció precoç"
+            elif n_pre_e > 0 and not has_ofi:
+                estat = "🟡 Senyal social sense avís oficial"
+            elif n_pre_e == 0 and has_ofi:
+                estat = "⬜ Sense detecció social prèvia"
+            else:
+                estat = "⬜ Sense dades suficients"
+            h_usr_e = det["pre_of"].iloc[0]["hora"][:5] if n_pre_e > 0 else "—"
+            h_ofi_e = det["hora_of_inc"] if has_ofi else "—"
+            if delta_e:
+                hh_e, mm_e = divmod(int(delta_e), 60)
+                delta_str_e = f"+{hh_e}h {mm_e}min" if hh_e > 0 else f"+{mm_e}min"
+            else:
+                delta_str_e = "—"
+            evid_rows.append({
+                "Línia":         _disp(linia),
+                "Primer usuari": h_usr_e,
+                "Primer oficial":h_ofi_e,
+                "Avantatge":     delta_str_e,
+                "n pre":         n_pre_e,
+                "Conf. pre":     conf_pre,
+                "% conf > 0.80": pct_80_e,
+                "Estat":         estat,
+            })
+        # Extra: línies sense resposta oficial
+        for linia_ex in (linies_extra_usuari or []):
+            if linia_ex in detection:
+                det_ex   = detection[linia_ex]
+                df_lu_ex = det_ex["df_l_u"]
+                h_usr_ex = df_lu_ex.iloc[0]["hora"][:5] if len(df_lu_ex) > 0 else "—"
+                evid_rows.append({
+                    "Línia":         linia_ex,
+                    "Primer usuari": h_usr_ex,
+                    "Primer oficial":"—",
+                    "Avantatge":     "—",
+                    "n pre":         len(df_lu_ex),
+                    "Conf. pre":     "—",
+                    "% conf > 0.80": "—",
+                    "Estat":         "🟡 Senyal social sense avís oficial",
+                })
     st.dataframe(pd.DataFrame(evid_rows), use_container_width=True, hide_index=True)
 
     st.divider()
 
     # ── Corba acumulada de tweets d'incident ──────────────────────────────────
     st.markdown(
-        "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+        "<div style='font-size:11px;font-weight:700;color:#475569;"
         "text-transform:uppercase;letter-spacing:1px;margin-bottom:8px'>"
         "Corba acumulada de tweets d'incident (amb llindar oficial)</div>",
         unsafe_allow_html=True,
@@ -589,34 +677,26 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
         fig_cum.update_layout(
             height=300, margin=dict(l=40, r=20, t=30, b=40),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#94a3b8", size=10),
-            xaxis=dict(title="Hora", showgrid=True, gridcolor="#1e293b", dtick=2, range=[0, 24]),
-            yaxis=dict(title="Tweets acumulats", showgrid=True, gridcolor="#1e293b"),
+            font=dict(color="#334155", size=10),
+            xaxis=dict(title="Hora", showgrid=True, gridcolor="#e2e8f0", dtick=2, range=[0, 24]),
+            yaxis=dict(title="Tweets acumulats", showgrid=True, gridcolor="#e2e8f0"),
             legend=dict(orientation="h", y=1.08),
         )
         st.plotly_chart(fig_cum, use_container_width=True, key=f"ce_cum_{dia}")
 
     st.divider()
 
-    # ── Validació estadística complementària (expander) ───────────────────────
-    with st.expander("Validació estadística complementària · Mann-Whitney U + Cliff's δ"):
-        st.caption(
-            "El test es calcula únicament quan hi ha ≥ 5 tweets tant en el grup pre-oficial "
-            "com en el post-oficial. En aquest cas d'estudi, diverses línies no compleixen "
-            "aquest llindar; l'anàlisi estadística s'interpreta com a complementària i no com "
-            "a evidència principal. La confiança reflecteix la sortida del classificador "
-            "d'incidents, no una validació externa de la veracitat dels tweets."
-        )
-        try:
+    # ── Validació estadística complementària ─────────────────────────────────
+    # Càlcul sempre (fora de l'expander; Streamlit no pot diferir còmput)
+    try:
         from scipy.stats import mannwhitneyu as _mwu
         _scipy_ok = True
     except ImportError:
         _scipy_ok = False
 
-    N_MIN = 5  # mínim de tweets per grup per calcular el test
+    N_MIN = 5
 
     def _cliffs_delta(a, b):
-        """Rank-biserial correlation / Cliff's delta. Rang [-1, 1]."""
         a, b = list(a), list(b)
         gt = sum(1 for x in a for y in b if x > y)
         lt = sum(1 for x in a for y in b if x < y)
@@ -635,11 +715,11 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
         return f"{d:+.3f} (gran)"
 
     stat_rows = []
-    box_data  = []   # per al box plot
+    box_data  = []
     for linia in linies_actives:
         det    = detection[linia]
         df_lu  = det["df_l_u"]
-        hor_of = det["hora_of_inc"]  # llindar: primer avís d'incident específic
+        hor_of = det["hora_of_inc"]
         is_q2  = ((df_lu["caracter"] == "queixa") if "caracter" in df_lu.columns
                   else pd.Series(False, index=df_lu.index))
         is_i2  = (df_lu["tipus_incident"].notna() &
@@ -653,14 +733,13 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
         post_c = (df_r2[df_r2["hora"] >= hor_of]["confianza"]
                   if hor_of != "99:99" else df_r2["confianza"])
 
-        # box plot data
         for v in pre_c:
             box_data.append({"Línia": linia, "Grup": "Pre-oficial", "confianza": v})
         for v in post_c:
             box_data.append({"Línia": linia, "Grup": "Post-oficial", "confianza": v})
 
-        pval   = None
-        cliff  = None
+        pval  = None
+        cliff = None
         if _scipy_ok and len(pre_c) >= N_MIN and len(post_c) >= N_MIN:
             try:
                 _, pval = _mwu(pre_c, post_c, alternative="two-sided")
@@ -670,21 +749,21 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
 
         pct_high = float((pre_c > 0.80).mean() * 100) if len(pre_c) > 0 else None
         stat_rows.append({
-            "_linia":   linia,
-            "_pval":    pval,
-            "Línia":    linia,
-            "n pre":    len(pre_c),
-            "Mit. pre": round(float(pre_c.mean()), 3)   if len(pre_c) > 0 else None,
-            "Med. pre": round(float(pre_c.median()), 3) if len(pre_c) > 0 else None,
-            "n post":   len(post_c),
-            "Mit. post":round(float(post_c.mean()), 3)  if len(post_c) > 0 else None,
-            "Med. post":round(float(post_c.median()), 3)if len(post_c) > 0 else None,
+            "_linia":       linia,
+            "_pval":        pval,
+            "Línia":        linia,
+            "n pre":        len(pre_c),
+            "Mit. pre":     round(float(pre_c.mean()), 3)   if len(pre_c) > 0 else None,
+            "Med. pre":     round(float(pre_c.median()), 3) if len(pre_c) > 0 else None,
+            "n post":       len(post_c),
+            "Mit. post":    round(float(post_c.mean()), 3)  if len(post_c) > 0 else None,
+            "Med. post":    round(float(post_c.median()), 3)if len(post_c) > 0 else None,
             "% pre > 0.80": round(pct_high, 1) if pct_high is not None else None,
-            "p (BH)":   pval,
-            "Cliff δ":  cliff,
+            "p (BH)":       pval,
+            "Cliff δ":      cliff,
         })
 
-    # Benjamini-Hochberg correction sobre els p-valors vàlids
+    # Benjamini-Hochberg correction
     valid_idx = [i for i, r in enumerate(stat_rows) if r["_pval"] is not None]
     if valid_idx:
         raw_pvals = [stat_rows[i]["_pval"] for i in valid_idx]
@@ -693,7 +772,6 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
         bh = [None] * m
         for rank, k in enumerate(order):
             bh[k] = raw_pvals[k] * m / (rank + 1)
-        # monotone (backward pass)
         cur_min = 1.0
         for k in reversed(order):
             cur_min = min(cur_min, bh[k])
@@ -701,101 +779,106 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
         for rank_i, stat_i in enumerate(valid_idx):
             stat_rows[stat_i]["p (BH)"] = min(bh[rank_i], 1.0)
 
-    if stat_rows:
-        st.markdown(
-            "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
-            "text-transform:uppercase;letter-spacing:1px;margin:4px 0 10px'>"
-            "Validació estadística · Mann-Whitney U + Cliff's δ "
-            "(confiança pre vs post avís oficial, corr. Benjamini-Hochberg)</div>",
-            unsafe_allow_html=True,
-        )
-
-        def _fmt(v, decimals=3):
-            if v is None or (isinstance(v, float) and pd.isna(v)):
-                return "—"
-            return f"{v:.{decimals}f}"
-
-        def _fmt_p(p):
-            if p is None or (isinstance(p, float) and pd.isna(p)):
-                return f"— (n < {N_MIN})"
-            s = f"{p:.4f}"
-            if p < 0.001: return f"{s} ✓✓✓"
-            if p < 0.01:  return f"{s} ✓✓"
-            if p < 0.05:  return f"{s} ✓"
-            return s
-
-        disp_cols = ["Línia", "n pre", "Mit. pre", "Med. pre",
-                     "n post", "Mit. post", "Med. post",
-                     "% pre > 0.80", "p (BH)", "Cliff δ"]
-        df_disp = pd.DataFrame(stat_rows)[disp_cols].copy()
-        df_disp["Mit. pre"]  = df_disp["Mit. pre"].apply(_fmt)
-        df_disp["Med. pre"]  = df_disp["Med. pre"].apply(_fmt)
-        df_disp["Mit. post"] = df_disp["Mit. post"].apply(_fmt)
-        df_disp["Med. post"] = df_disp["Med. post"].apply(_fmt)
-        df_disp["% pre > 0.80"] = df_disp["% pre > 0.80"].apply(
-            lambda v: f"{v:.1f}%" if (v is not None and not (isinstance(v, float) and pd.isna(v))) else "—")
-        df_disp["p (BH)"]   = df_disp["p (BH)"].apply(_fmt_p)
-        df_disp["Cliff δ"]  = df_disp["Cliff δ"].apply(_cliff_label)
-        st.dataframe(df_disp, use_container_width=True, hide_index=True)
+    # Display: tot dins l'expander
+    with st.expander("Validació estadística complementària · Mann-Whitney U + Cliff's δ"):
         st.caption(
-            f"✓ p < 0.05 · ✓✓ p < 0.01 · ✓✓✓ p < 0.001 (p-valors corregits BH). "
-            f"Test calculat només si n ≥ {N_MIN} en cada grup. "
-            "Cliff's δ: |δ| < 0.147 negligible · 0.147-0.33 petit · 0.33-0.474 mig · ≥ 0.474 gran. "
-            "La confiança reflecteix la sortida del classificador d'incidents, "
-            "no una validació externa de la veracitat dels tweets."
+            "El test es calcula únicament quan hi ha ≥ 5 tweets tant en el grup pre-oficial "
+            "com en el post-oficial. En aquest cas d'estudi, diverses línies no compleixen "
+            "aquest llindar; l'anàlisi estadística s'interpreta com a complementària i no com "
+            "a evidència principal. La confiança reflecteix la sortida del classificador "
+            "d'incidents, no una validació externa de la veracitat dels tweets."
         )
+        if stat_rows:
+            def _fmt(v, decimals=3):
+                if v is None or (isinstance(v, float) and pd.isna(v)):
+                    return "—"
+                return f"{v:.{decimals}f}"
 
-        # Box plot pre vs post per línia (una llegenda clara, dos grups per línia)
-        if box_data:
-            df_box = pd.DataFrame(box_data)
-            linies_box = [r["Línia"] for r in stat_rows]
-            fig_box = go.Figure()
-            pre_shown  = False
-            post_shown = False
-            for lin in linies_box:
-                lc = LINE_COLORS.get(lin, DEFAULT_COLOR)
-                for grup, color, shown_flag in [
-                    ("Pre-oficial",  "#7dd3fc", pre_shown),
-                    ("Post-oficial", "#f87171", post_shown),
-                ]:
-                    vals = df_box[(df_box["Línia"] == lin) &
-                                  (df_box["Grup"] == grup)]["confianza"].tolist()
-                    if not vals:
-                        continue
-                    show_leg = not (pre_shown if grup == "Pre-oficial" else post_shown)
-                    fig_box.add_trace(go.Box(
-                        y=vals,
-                        x=[lin] * len(vals),
-                        name=grup,
-                        legendgroup=grup,
-                        marker_color=color,
-                        boxpoints="all", jitter=0.4, pointpos=0,
-                        marker=dict(size=5, opacity=0.55),
-                        line=dict(width=1.5),
-                        showlegend=show_leg,
-                        offsetgroup=grup,
-                    ))
-                    if grup == "Pre-oficial":
-                        pre_shown = True
-                    else:
-                        post_shown = True
-            fig_box.update_layout(
-                height=320,
-                margin=dict(l=40, r=20, t=30, b=40),
-                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#94a3b8", size=11),
-                yaxis=dict(title="Confiança", range=[0.65, 1.02],
-                           showgrid=True, gridcolor="#1e293b"),
-                xaxis=dict(showgrid=False),
-                boxmode="group",
-                legend=dict(orientation="h", y=1.08),
-                title=dict(
-                    text="Distribució de confiança per línia: pre-oficial vs post-oficial",
-                    font=dict(size=11, color="#64748b"), x=0,
-                ),
+            def _fmt_p(p):
+                if p is None or (isinstance(p, float) and pd.isna(p)):
+                    return f"— (n < {N_MIN})"
+                s = f"{p:.4f}"
+                if p < 0.001: return f"{s} ✓✓✓"
+                if p < 0.01:  return f"{s} ✓✓"
+                if p < 0.05:  return f"{s} ✓"
+                return s
+
+            st.markdown(
+                "<div style='font-size:11px;font-weight:700;color:#475569;"
+                "text-transform:uppercase;letter-spacing:1px;margin:4px 0 10px'>"
+                "Mann-Whitney U + Cliff's δ · confiança pre vs post avís oficial "
+                "(correcció Benjamini-Hochberg)</div>",
+                unsafe_allow_html=True,
             )
-            st.plotly_chart(fig_box, use_container_width=True,
-                            key=f"ce_box_{dia}")
+            disp_cols = ["Línia", "n pre", "Mit. pre", "Med. pre",
+                         "n post", "Mit. post", "Med. post",
+                         "% pre > 0.80", "p (BH)", "Cliff δ"]
+            df_disp = pd.DataFrame(stat_rows)[disp_cols].copy()
+            df_disp["Mit. pre"]  = df_disp["Mit. pre"].apply(_fmt)
+            df_disp["Med. pre"]  = df_disp["Med. pre"].apply(_fmt)
+            df_disp["Mit. post"] = df_disp["Mit. post"].apply(_fmt)
+            df_disp["Med. post"] = df_disp["Med. post"].apply(_fmt)
+            df_disp["% pre > 0.80"] = df_disp["% pre > 0.80"].apply(
+                lambda v: f"{v:.1f}%" if (v is not None and not (isinstance(v, float) and pd.isna(v))) else "—")
+            df_disp["p (BH)"]  = df_disp["p (BH)"].apply(_fmt_p)
+            df_disp["Cliff δ"] = df_disp["Cliff δ"].apply(_cliff_label)
+            st.dataframe(df_disp, use_container_width=True, hide_index=True)
+            st.caption(
+                f"✓ p < 0.05 · ✓✓ p < 0.01 · ✓✓✓ p < 0.001 (p-valors corregits BH). "
+                f"Test calculat només si n ≥ {N_MIN} en cada grup. "
+                "Cliff's δ: |δ| < 0.147 negligible · 0.147-0.33 petit · 0.33-0.474 mig · ≥ 0.474 gran."
+            )
+
+            if box_data:
+                df_box = pd.DataFrame(box_data)
+                linies_box = [r["Línia"] for r in stat_rows]
+                fig_box = go.Figure()
+                pre_shown  = False
+                post_shown = False
+                for lin in linies_box:
+                    lc = LINE_COLORS.get(lin, DEFAULT_COLOR)
+                    for grup, color, shown_flag in [
+                        ("Pre-oficial",  "#7dd3fc", pre_shown),
+                        ("Post-oficial", "#f87171", post_shown),
+                    ]:
+                        vals = df_box[(df_box["Línia"] == lin) &
+                                      (df_box["Grup"] == grup)]["confianza"].tolist()
+                        if not vals:
+                            continue
+                        show_leg = not (pre_shown if grup == "Pre-oficial" else post_shown)
+                        fig_box.add_trace(go.Box(
+                            y=vals,
+                            x=[lin] * len(vals),
+                            name=grup,
+                            legendgroup=grup,
+                            marker_color=color,
+                            boxpoints="all", jitter=0.4, pointpos=0,
+                            marker=dict(size=5, opacity=0.55),
+                            line=dict(width=1.5),
+                            showlegend=show_leg,
+                            offsetgroup=grup,
+                        ))
+                        if grup == "Pre-oficial":
+                            pre_shown = True
+                        else:
+                            post_shown = True
+                fig_box.update_layout(
+                    height=320,
+                    margin=dict(l=40, r=20, t=30, b=40),
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color="#334155", size=11),
+                    yaxis=dict(title="Confiança", range=[0.65, 1.02],
+                               showgrid=True, gridcolor="#e2e8f0"),
+                    xaxis=dict(showgrid=False),
+                    boxmode="group",
+                    legend=dict(orientation="h", y=1.08),
+                    title=dict(
+                        text="Distribució de confiança per línia: pre-oficial vs post-oficial",
+                        font=dict(size=11, color="#64748b"), x=0,
+                    ),
+                )
+                st.plotly_chart(fig_box, use_container_width=True,
+                                key=f"ce_box_{dia}")
 
     st.divider()
 
@@ -829,7 +912,7 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
             f"<div style='display:flex;align-items:center;gap:12px;margin:24px 0 10px;"
             f"padding:10px 16px;background:linear-gradient(90deg,{lcolor}22 0%,transparent 100%);"
             f"border-radius:8px;border-left:3px solid {lcolor}'>"
-            f"<span style='font-size:18px;font-weight:800;color:#f1f5f9'>Línia {linia}</span>"
+            f"<span style='font-size:18px;font-weight:800;color:#0f172a'>Línia {_disp(linia)}</span>"
             f"<span style='font-size:12px;color:#64748b'>"
             f"{len(df_l)} tweets · {len(pre_of)} usuaris anticipats</span>"
             f"{adv_badge}</div>",
@@ -892,9 +975,9 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
                     margin=dict(l=24, r=36, t=28, b=28),
                     paper_bgcolor="rgba(0,0,0,0)",
                     plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(color="#94a3b8", size=10),
+                    font=dict(color="#334155", size=10),
                     xaxis=dict(showgrid=False, title="hora", dtick=2),
-                    yaxis=dict(showgrid=True, gridcolor="#1e293b", title="tw"),
+                    yaxis=dict(showgrid=True, gridcolor="#e2e8f0", title="tw"),
                     yaxis2=dict(
                         overlaying="y", side="right",
                         range=[0.70, 1.02], showgrid=False,
@@ -916,16 +999,16 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
             if len(tc) > 0:
                 items = "".join(
                     f"<div style='display:flex;justify-content:space-between;"
-                    f"padding:2px 0;border-bottom:1px solid #1e293b'>"
+                    f"padding:2px 0;border-bottom:1px solid #e2e8f0'>"
                     f"<span style='font-size:11px;color:{TIPO_COLORS.get(t, DEFAULT_COLOR)}'>"
                     f"● {t}</span>"
-                    f"<span style='font-size:11px;font-weight:700;color:#94a3b8'>{n}</span></div>"
+                    f"<span style='font-size:11px;font-weight:700;color:#475569'>{n}</span></div>"
                     for t, n in tc.items()
                 )
                 st.markdown(
-                    f"<div style='margin-top:8px;padding:8px 10px;background:#0f172a;"
-                    f"border-radius:6px;border:1px solid #1e293b'>"
-                    f"<div style='font-size:9px;color:#475569;text-transform:uppercase;"
+                    f"<div style='margin-top:8px;padding:8px 10px;background:#f8fafc;"
+                    f"border-radius:6px;border:1px solid #e2e8f0'>"
+                    f"<div style='font-size:9px;color:#64748b;text-transform:uppercase;"
                     f"letter-spacing:1px;margin-bottom:5px'>Tipus d'incident</div>"
                     f"{items}</div>",
                     unsafe_allow_html=True,
@@ -972,8 +1055,8 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
                 conf_m = df_rel["confianza"].dropna().mean() if "confianza" in df_rel.columns else None
                 conf_txt = f" · conf. {conf_m:.2f}" if conf_m is not None else ""
                 st.markdown(
-                    f"<div style='font-size:12px;color:#94a3b8;margin-bottom:10px;line-height:1.7'>"
-                    f"<b style='color:#f1f5f9'>{n_rel} tweets rellevants</b>{conf_txt} · "
+                    f"<div style='font-size:12px;color:#475569;margin-bottom:10px;line-height:1.7'>"
+                    f"<b style='color:#0f172a'>{n_rel} tweets rellevants</b>{conf_txt} · "
                     f"<b style='color:{lcolor}'>{len(clusters)} incident"
                     f"{'s' if len(clusters)>1 else ''}</b><br>"
                     f"<span style='color:{lcolor}'>{n_pre} anteriors al primer avís oficial</span>"
@@ -1018,13 +1101,8 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
                     # Tweets del cluster
                     cards = "".join(
                         _tweet_card(r, lcolor, show_confianza=True)
-                        for _, r in cl.head(8).iterrows()
+                        for _, r in cl.iterrows()
                     )
-                    if n_cl > 8:
-                        cards += (
-                            f"<div style='font-size:11px;color:#64748b;padding:3px 8px'>"
-                            f"... i {n_cl-8} tweets més</div>"
-                        )
                     st.markdown(cards, unsafe_allow_html=True)
 
                     # Comunicació oficial posterior a l'inici del cluster
@@ -1032,7 +1110,7 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
                         matching = ofi_sorted[
                             (ofi_sorted["hora"] >= t_s) &
                             (~ofi_sorted.index.isin(used_ofi))
-                        ].head(4)
+                        ]
                         if len(matching) > 0:
                             st.markdown(
                                 "<div style='margin:5px 0 3px;font-size:10px;"
@@ -1049,8 +1127,8 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
                             st.markdown(
                                 "<div style='font-size:11px;color:#475569;"
                                 "font-style:italic;margin:5px 0;padding:6px 10px;"
-                                "background:#1e293b;border-radius:6px;"
-                                "border-left:2px solid #334155'>"
+                                "background:#f1f5f9;border-radius:6px;"
+                                "border-left:2px solid #cbd5e1'>"
                                 "Sense comunicació oficial posterior per a aquest incident."
                                 "</div>",
                                 unsafe_allow_html=True,
@@ -1062,7 +1140,7 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
                     if len(remaining) > 0:
                         st.markdown(
                             f"<div style='margin-top:14px;font-size:11px;font-weight:700;"
-                            f"color:#94a3b8;text-transform:uppercase;letter-spacing:1px;"
+                            f"color:#475569;text-transform:uppercase;letter-spacing:1px;"
                             f"margin-bottom:4px'>Altres comunicacions oficials ({len(remaining)})</div>",
                             unsafe_allow_html=True,
                         )
@@ -1086,7 +1164,7 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
             f"<div style='display:flex;align-items:center;gap:12px;margin:24px 0 12px;"
             f"padding:10px 16px;background:linear-gradient(90deg,{bcolor}22 0%,transparent 100%);"
             f"border-radius:8px;border-left:3px solid {bcolor}'>"
-            f"<span style='font-size:18px;font-weight:800;color:#f1f5f9'>{be['titol']}</span>"
+            f"<span style='font-size:18px;font-weight:800;color:#0f172a'>{be['titol']}</span>"
             f"<span style='font-size:12px;color:#64748b'>{be['subtitol']}</span>"
             f"</div>",
             unsafe_allow_html=True,
@@ -1117,21 +1195,21 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
         bec1, bec2 = st.columns(2)
         with bec1:
             st.markdown(
-                "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+                "<div style='font-size:11px;font-weight:700;color:#475569;"
                 "text-transform:uppercase;letter-spacing:1px;margin-bottom:6px'>"
                 "Usuaris detecten l'incident</div>",
                 unsafe_allow_html=True,
             )
-            for _, r in df_be_u[df_be_u["hora"] <= hora_limit].head(8).iterrows():
+            for _, r in df_be_u[df_be_u["hora"] <= hora_limit].iterrows():
                 st.markdown(_tweet_card(r, bcolor), unsafe_allow_html=True)
         with bec2:
             st.markdown(
-                "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+                "<div style='font-size:11px;font-weight:700;color:#475569;"
                 "text-transform:uppercase;letter-spacing:1px;margin-bottom:6px'>"
                 "Comunicació oficial</div>",
                 unsafe_allow_html=True,
             )
-            for _, r in df_be_o[df_be_o["hora"] <= hora_limit].head(5).iterrows():
+            for _, r in df_be_o[df_be_o["hora"] <= hora_limit].iterrows():
                 st.markdown(_tweet_card(r, "#DC143C"), unsafe_allow_html=True)
 
         st.divider()
@@ -1143,7 +1221,7 @@ def _render_cas_estudi(dia, titol, descripcio_html, bloc_especial=None):
         df_dia["tipus_incident"].notna() &
         (df_dia["tipus_incident"] != "sin_incidencia") &
         (pd.to_numeric(df_dia["confianza"], errors="coerce") >= 0.80)
-    ].sort_values("hora").head(15)
+    ].sort_values("hora")
     if len(df_sense_linia) > 0:
         for _, r in df_sense_linia.iterrows():
             tc = TIPO_COLORS.get(str(r.get("tipus_incident", "")), DEFAULT_COLOR)
@@ -1163,83 +1241,88 @@ st.markdown("""
 
 /* ══ BASE ══════════════════════════════════════════════════════ */
 html, body, [class*="css"] { font-family: 'Inter', sans-serif !important; }
-.stApp { background: #080e1a !important; }
-.main  { background: #080e1a !important; }
+.stApp { background: #ffffff !important; }
+.main  { background: #ffffff !important; }
 .main .block-container {
     padding-top: 2.5rem !important;
     padding-bottom: 5rem !important;
     max-width: 1400px !important;
 }
-p, li { line-height: 1.75 !important; }
-hr    { border-color: #1e293b !important; opacity: 1 !important; }
+p, li { line-height: 1.75 !important; color: #1e293b !important; font-size: 15px !important; }
+hr    { border-color: #e2e8f0 !important; opacity: 1 !important; }
+
+/* ══ CAPTIONS I TEXT SECUNDARI ════════════════════════════════ */
+[data-testid="stCaptionContainer"] p { color: #64748b !important; font-size: 13px !important; }
+[data-testid="stMarkdownContainer"] p { color: #1e293b !important; font-size: 15px !important; }
+[data-testid="stText"] { color: #1e293b !important; }
 
 /* ══ SIDEBAR ═══════════════════════════════════════════════════ */
 [data-testid="stSidebar"] > div:first-child {
-    background: linear-gradient(180deg, #050c1a 0%, #0f172a 60%, #1e293b 100%) !important;
-    border-right: 1px solid #1e293b !important;
+    background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 60%, #e8edf2 100%) !important;
+    border-right: 1px solid #e2e8f0 !important;
 }
 [data-testid="stSidebar"] p,
 [data-testid="stSidebar"] span,
 [data-testid="stSidebar"] label,
-[data-testid="stSidebar"] div { color: #cbd5e1 !important; }
+[data-testid="stSidebar"] div { color: #334155 !important; }
 
 /* ══ TITOLS ════════════════════════════════════════════════════ */
 h1 {
     font-size: 2.4rem !important;
     font-weight: 800 !important;
     letter-spacing: -1px !important;
-    color: #f8fafc !important;
+    color: #0f172a !important;
 }
 h2 {
-    font-size: 1.15rem !important;
-    font-weight: 600 !important;
-    color: #e2e8f0 !important;
-    border-left: 3px solid #7dd3fc !important;
+    font-size: 1.25rem !important;
+    font-weight: 700 !important;
+    color: #0f172a !important;
+    border-left: 3px solid #0284c7 !important;
     padding-left: 10px !important;
     margin-top: 1.4rem !important;
 }
-h3 { color: #cbd5e1 !important; font-weight: 600 !important; }
+h3 { color: #1e293b !important; font-weight: 600 !important; font-size: 1.05rem !important; }
 
 /* ══ METRIC CARDS ══════════════════════════════════════════════ */
 [data-testid="metric-container"] {
-    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%) !important;
-    border: 1px solid #334155 !important;
+    background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%) !important;
+    border: 1px solid #e2e8f0 !important;
     border-radius: 12px !important;
     padding: 20px 24px !important;
-    box-shadow: 0 4px 20px rgba(0,0,0,0.3) !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06) !important;
     transition: all 0.2s ease !important;
 }
 [data-testid="metric-container"]:hover {
-    border-color: #7dd3fc !important;
-    box-shadow: 0 4px 24px rgba(125,211,252,0.12) !important;
+    border-color: #0284c7 !important;
+    box-shadow: 0 4px 16px rgba(2,132,199,0.12) !important;
     transform: translateY(-1px) !important;
 }
-[data-testid="stMetricLabel"] > div { color: #64748b !important; font-size: 11px !important; text-transform: uppercase !important; letter-spacing: 0.8px !important; }
-[data-testid="stMetricValue"] > div { color: #f8fafc !important; font-size: 2rem !important; font-weight: 800 !important; letter-spacing: -1px !important; }
+[data-testid="stMetricLabel"] > div { color: #64748b !important; font-size: 13px !important; text-transform: uppercase !important; letter-spacing: 0.8px !important; font-weight: 600 !important; }
+[data-testid="stMetricValue"] > div { color: #0f172a !important; font-size: 2.2rem !important; font-weight: 800 !important; letter-spacing: -1px !important; }
 [data-testid="stMetricDelta"] svg   { display: none !important; }
 
 /* ══ EXPANDERS ═════════════════════════════════════════════════ */
 [data-testid="stExpander"] {
-    background: #0f172a !important;
-    border: 1px solid #1e293b !important;
+    background: #f8fafc !important;
+    border: 1px solid #e2e8f0 !important;
     border-radius: 10px !important;
     overflow: hidden !important;
 }
 [data-testid="stExpander"] summary {
-    color: #94a3b8 !important;
+    color: #475569 !important;
     font-size: 13px !important;
     font-weight: 500 !important;
     padding: 10px 16px !important;
 }
-[data-testid="stExpander"] summary:hover { color: #f1f5f9 !important; }
+[data-testid="stExpander"] summary:hover { color: #0f172a !important; }
 
 /* ══ INFO / ALERT ══════════════════════════════════════════════ */
 [data-testid="stInfo"] {
-    background: #0c2340 !important;
+    background: #eff6ff !important;
     border: none !important;
     border-left: 3px solid #3b82f6 !important;
     border-radius: 8px !important;
-    color: #93c5fd !important;
+    color: #1e40af !important;
     font-size: 13px !important;
 }
 
@@ -1255,13 +1338,13 @@ h3 { color: #cbd5e1 !important; font-weight: 600 !important; }
     padding: 7px 12px !important;
     font-size: 14px !important;
     font-weight: 400 !important;
-    color: #94a3b8 !important;
+    color: #475569 !important;
     transition: background 0.15s, color 0.15s !important;
     width: 100% !important;
 }
 [data-testid="stSidebar"] [data-testid="stRadio"] label:hover {
-    background: rgba(255,255,255,0.05) !important;
-    color: #e2e8f0 !important;
+    background: rgba(0,0,0,0.05) !important;
+    color: #0f172a !important;
     border: none !important;
 }
 /* Reduir gap general al sidebar */
@@ -1276,18 +1359,19 @@ h3 { color: #cbd5e1 !important; font-weight: 600 !important; }
     gap: 6px !important;
 }
 [role="radiogroup"] label {
-    background: #1e293b !important;
-    border: 1px solid #334155 !important;
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
     border-radius: 7px !important;
     padding: 5px 14px !important;
     font-size: 13px !important;
     font-weight: 500 !important;
+    color: #334155 !important;
     transition: all 0.15s ease !important;
     cursor: pointer !important;
 }
 [role="radiogroup"] label:hover {
-    border-color: #7dd3fc !important;
-    color: #7dd3fc !important;
+    border-color: #0284c7 !important;
+    color: #0284c7 !important;
 }
 /* El label del widget (títol sobre els botons) no ha de tenir border */
 [data-testid="stWidgetLabel"] {
@@ -1310,37 +1394,61 @@ h3 { color: #cbd5e1 !important; font-weight: 600 !important; }
 [data-testid="stSelectbox"] > div > div,
 [data-testid="stDateInput"] > div > div > input,
 [data-testid="stNumberInput"] > div > div > input {
-    background: #1e293b !important;
-    border: 1px solid #334155 !important;
+    background: #ffffff !important;
+    border: 1px solid #e2e8f0 !important;
     border-radius: 8px !important;
-    color: #f1f5f9 !important;
+    color: #0f172a !important;
     font-size: 13px !important;
 }
 [data-testid="stSelectbox"] > div > div:hover,
 [data-testid="stDateInput"] > div > div > input:focus,
 [data-testid="stNumberInput"] > div > div > input:focus {
-    border-color: #7dd3fc !important;
+    border-color: #0284c7 !important;
 }
 
 /* ══ DATAFRAME ═════════════════════════════════════════════════ */
 [data-testid="stDataFrame"] {
-    border: 1px solid #1e293b !important;
+    border: 1px solid #e2e8f0 !important;
     border-radius: 10px !important;
     overflow: hidden !important;
 }
 
 /* ══ DIVIDER ═══════════════════════════════════════════════════ */
-[data-testid="stDivider"] { background: #1e293b !important; }
+[data-testid="stDivider"] { background: #e2e8f0 !important; }
+
+/* ══ PLOTLY — TEXTOS SVG ═══════════════════════════════════════ */
+.js-plotly-plot .plotly text { fill: #1e293b !important; }
+.js-plotly-plot .plotly .gtitle text { fill: #0f172a !important; }
+
+/* ══ PILLS (st.pills widget) ═══════════════════════════════════ */
+[data-testid="stPills"] button {
+    background: #f1f5f9 !important;
+    color: #334155 !important;
+    border: 1px solid #cbd5e1 !important;
+    border-radius: 20px !important;
+}
+[data-testid="stPills"] button:hover {
+    background: #e2e8f0 !important;
+    border-color: #0284c7 !important;
+    color: #0284c7 !important;
+}
+[data-testid="stPills"] button[aria-pressed="true"],
+[data-testid="stPills"] button[kind="pills"][data-active="true"],
+[data-testid="stPills"] button[class*="active"] {
+    background: #0284c7 !important;
+    color: #ffffff !important;
+    border-color: #0284c7 !important;
+}
 
 /* ══ HERO ══════════════════════════════════════════════════════ */
 .hero-wrap  { display:flex; align-items:center; gap:24px; padding:32px 0 16px; }
-.hero-title { font-size:2.4rem; font-weight:800; color:#f8fafc; margin:0; line-height:1.15; letter-spacing:-1px; }
-.hero-sub   { font-size:1rem; color:#94a3b8; margin:6px 0 0; line-height:1.6; }
+.hero-title { font-size:2.4rem; font-weight:800; color:#0f172a; margin:0; line-height:1.15; letter-spacing:-1px; }
+.hero-sub   { font-size:1rem; color:#475569; margin:6px 0 0; line-height:1.6; }
 .hero-badge {
     display:inline-flex; align-items:center; gap:8px;
-    background:linear-gradient(135deg,#1e293b,#0f172a); border:1px solid #334155;
-    border-radius:20px; padding:5px 14px; font-size:12px; color:#7dd3fc;
-    font-weight:600; margin-top:14px; box-shadow:0 2px 8px rgba(0,0,0,0.3);
+    background:linear-gradient(135deg,#eff6ff,#f0f9ff); border:1px solid #bae6fd;
+    border-radius:20px; padding:5px 14px; font-size:12px; color:#0284c7;
+    font-weight:600; margin-top:14px; box-shadow:0 2px 8px rgba(0,0,0,0.06);
 }
 </style>
 """, unsafe_allow_html=True)
@@ -1353,36 +1461,36 @@ with st.sidebar:
     st.markdown(
         f'<div style="display:flex;align-items:center;gap:12px;padding:8px 0 4px">'
         f'<img src="data:image/svg+xml;base64,{_LOGO_B64}" width="44">'
-        f'<div><div style="font-size:16px;font-weight:700;color:#f1f5f9">Anàlisi X · Rodalies</div>'
-        f'<div style="font-size:11px;color:#64748b">Deteccio d\'incidencies</div></div></div>',
+        f'<div><div style="font-size:16px;font-weight:700;color:#0f172a">Anàlisi X · Rodalies</div>'
+        f'<div style="font-size:11px;color:#64748b">Detecció d\'incidències</div></div></div>',
         unsafe_allow_html=True,
     )
     st.divider()
 
     page = st.radio(
-        "Pagina",
-        ["Inici", "Mapa geografic", "Analisi temporal",
-         "Analisi per linies", "Analisi d'incidencies",
-         "Incidencies per linia", "20 Gen — Cas d'Estudi",
-         "20 Gen — Original", "23 Oct — Cas d'Estudi",
-         "13 Feb — Cas d'Estudi", "6 Mar — Cas d'Estudi"],
+        "Pàgina",
+        ["Inici", "Mapa geogràfic", "Anàlisi temporal",
+         "Anàlisi per línies", "Anàlisi d'incidències",
+         "Incidències per línia", "20 Gen — Cas d'Estudi",
+         "9 Feb — Cas d'Estudi",
+         "13 Feb — Cas d'Estudi"],
         label_visibility="collapsed",
         key="nav_page",
     )
 
     st.markdown(
-        "<div style='margin:6px 0 10px;border-top:1px solid #1e293b'></div>"
-        "<div style='font-size:13px;font-weight:700;color:#94a3b8;"
+        "<div style='margin:6px 0 10px;border-top:1px solid #e2e8f0'></div>"
+        "<div style='font-size:13px;font-weight:700;color:#64748b;"
         "letter-spacing:0.5px;text-transform:uppercase;margin-bottom:14px'>"
         "Filtres globals</div>",
         unsafe_allow_html=True,
     )
 
-    fil_lines     = st.pills("Linia",    ALL_LINES,     selection_mode="multi",
+    fil_lines     = st.pills("Línia",    ALL_LINES,     selection_mode="multi",
                               default=ALL_LINES,          key="fil_lines")
     fil_idiomes   = st.pills("Idioma",   ALL_IDIOMES,   selection_mode="multi",
                               default=list(ALL_IDIOMES),  key="fil_idiomes")
-    fil_caracters = st.pills("Caracter", ALL_CARACTERS, selection_mode="multi",
+    fil_caracters = st.pills("Caràcter", ALL_CARACTERS, selection_mode="multi",
                               default=list(ALL_CARACTERS), key="fil_caracters")
 
     rb_col, date_col = st.columns([1, 5])
@@ -1395,12 +1503,12 @@ with st.sidebar:
             "padding:0 !important;height:38px !important;}</style>",
             unsafe_allow_html=True,
         )
-        if st.button("↺", key="reset_dates", help="Restablir al periode complet",
+        if st.button("↺", key="reset_dates", help="Restablir al període complet",
                      use_container_width=True):
             st.session_state["fil_dates"] = (CAL_MIN, CAL_MAX)
     with date_col:
         fil_dates = st.date_input(
-            "Periode de temps",
+            "Període de temps",
             value=st.session_state.get("fil_dates", (CAL_MIN, CAL_MAX)),
             min_value=CAL_MIN,
             max_value=CAL_MAX,
@@ -1415,8 +1523,8 @@ with st.sidebar:
         date_start_str = date_end_str = str(fil_dates) if fil_dates else None
 
     st.markdown(
-        "<div style='margin-top:32px;padding-top:14px;border-top:1px solid #1e293b;"
-        "text-align:center;font-size:10px;color:#334155;line-height:1.6'>"
+        "<div style='margin-top:32px;padding-top:14px;border-top:1px solid #e2e8f0;"
+        "text-align:center;font-size:10px;color:#64748b;line-height:1.6'>"
         "© Marina Castellano &nbsp;·&nbsp; TFG 2025–2026<br>"
         "Grau en Ciència i Enginyeria de Dades"
         "</div>",
@@ -1436,8 +1544,8 @@ if page == "Inici":
         f'<div class="hero-title">Rodalies de Catalunya</div>'
         f'<div class="hero-sub">Extracció i Anàlisi de dades de X per anticipar incidències en un servei de transport</div>'
         f'<span class="hero-badge">Universitat &nbsp;·&nbsp; Grau en Ciència i Enginyeria de Dades</span>'
-        f'<div style="margin-top:14px;font-size:14px;color:#94a3b8;font-weight:500">'
-        f'by <span style="color:#f1f5f9;font-weight:700">Marina Castellano</span>'
+        f'<div style="margin-top:14px;font-size:14px;color:#475569;font-weight:500">'
+        f'by <span style="color:#0f172a;font-weight:700">Marina Castellano</span>'
         f' &nbsp;·&nbsp; TFG 2025–2026</div>'
         f'</div></div>',
         unsafe_allow_html=True,
@@ -1459,23 +1567,64 @@ Utilitza la **barra lateral esquerra** per navegar entre les seccions de l'app.
     st.subheader("Dataset de tweets")
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Tweets al dataset",   f"{len(df):,}")
-    c2.metric("Tweets amb estacio",  f"{df_exp['tweet_id'].nunique():,}")
-    c3.metric("Estacions detectades", df_exp["station"].nunique() if len(df_exp) else 0)
-    c4.metric("Dies amb dades",      df["date"].nunique())
+    with c1:
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:700'>Tweets al dataset</div>"
+            f"<div style='font-size:20px;font-weight:400;color:#334155'>{len(df):,}</div>"
+            f"</div>", unsafe_allow_html=True)
+    with c2:
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:700'>Tweets amb estació</div>"
+            f"<div style='font-size:20px;font-weight:400;color:#334155'>{df_exp['tweet_id'].nunique():,}</div>"
+            f"</div>", unsafe_allow_html=True)
+    with c3:
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:700'>Estacions detectades</div>"
+            f"<div style='font-size:20px;font-weight:400;color:#334155'>{df_exp['station'].nunique() if len(df_exp) else 0}</div>"
+            f"</div>", unsafe_allow_html=True)
+    with c4:
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:700'>Dies amb dades</div>"
+            f"<div style='font-size:20px;font-weight:400;color:#334155'>{df['date'].nunique()}</div>"
+            f"</div>", unsafe_allow_html=True)
 
     st.divider()
-    st.subheader("Incidencies detectades (periode complet)")
+    st.subheader("Incidències detectades (període complet)")
 
     inc_total = df_inc[df_inc["tipo_incidencia"].isin(ALL_TIPOS)]
     pct_inc   = round(len(inc_total) / len(df_inc) * 100, 1) if len(df_inc) > 0 else 0
 
     i1, i2, i3, i4 = st.columns(4)
-    i1.metric("Tweets d'incident",  f"{len(inc_total):,}")
-    i2.metric("Tipus mes frequent", inc_total["tipo_incidencia"].mode().iloc[0]
-              if len(inc_total) > 0 else "—")
-    i3.metric("Mesos amb incidents", inc_total["month"].nunique())
-    i4.metric("% sobre total",      f"{pct_inc}%")
+    with i1:
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:700'>Tweets d'incident</div>"
+            f"<div style='font-size:20px;font-weight:400;color:#334155'>{len(inc_total):,}</div>"
+            f"</div>", unsafe_allow_html=True)
+    with i2:
+        tipo_frec = (inc_total["tipo_incidencia"].mode().iloc[0]
+                     if len(inc_total) > 0 else "—")
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:700'>Tipus més freqüent</div>"
+            f"<div style='font-size:20px;font-weight:400;color:#334155'>{tipo_frec}</div>"
+            f"</div>", unsafe_allow_html=True)
+    with i3:
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:700'>Mesos amb incidents</div>"
+            f"<div style='font-size:20px;font-weight:400;color:#334155'>{inc_total['month'].nunique()}</div>"
+            f"</div>", unsafe_allow_html=True)
+    with i4:
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:700'>% sobre total</div>"
+            f"<div style='font-size:20px;font-weight:400;color:#334155'>{pct_inc}%</div>"
+            f"</div>", unsafe_allow_html=True)
 
     st.divider()
 
@@ -1484,7 +1633,7 @@ Utilitza la **barra lateral esquerra** per navegar entre les seccions de l'app.
         tcol1, tcol2 = st.columns(2)
 
         with tcol1:
-            st.markdown("**Distribucio per tipus d'incidencia**")
+            st.markdown("**Distribució per tipus d'incidència**")
             tipo_dist = (inc_total.groupby("tipo_incidencia").size()
                          .reset_index(name="n").sort_values("n", ascending=True))
             tipo_dist["color"] = tipo_dist["tipo_incidencia"].map(TIPO_COLORS)
@@ -1498,13 +1647,14 @@ Utilitza la **barra lateral esquerra** per navegar entre les seccions de l'app.
                 height=250, margin=dict(l=100, r=60, t=10, b=30),
                 xaxis_title="Tweets", yaxis_title="",
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#94a3b8"),
+                font=dict(color="#334155"),
             )
             st.plotly_chart(fig_t, use_container_width=True)
 
         with tcol2:
-            st.markdown("**Evolucio mensual d'incidents**")
-            inc_monthly = (inc_total.groupby("month").size()
+            st.markdown("**Evolució mensual d'incidents**")
+            inc_monthly = (inc_total[inc_total["date"] >= DATA_START]
+                           .groupby("month").size()
                            .reset_index(name="n").sort_values("month"))
             fig_im = go.Figure(go.Scatter(
                 x=inc_monthly["month"], y=inc_monthly["n"],
@@ -1516,7 +1666,7 @@ Utilitza la **barra lateral esquerra** per navegar entre les seccions de l'app.
                 height=250, margin=dict(l=40, r=20, t=10, b=40),
                 xaxis_title="", yaxis_title="Tweets",
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#94a3b8"),
+                font=dict(color="#334155"),
             )
             st.plotly_chart(fig_im, use_container_width=True)
 
@@ -1524,11 +1674,11 @@ Utilitza la **barra lateral esquerra** per navegar entre les seccions de l'app.
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGINA: MAPA GEOGRAFIC
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "Mapa geografic":
+elif page == "Mapa geogràfic":
 
-    st.title("Mapa geografic")
+    st.title("Mapa geogràfic")
     st.markdown(
-        "<p style='color:#94a3b8;font-size:0.95rem;margin:-8px 0 24px;line-height:1.7'>"
+        "<p style='color:#475569;font-size:0.95rem;margin:-8px 0 24px;line-height:1.7'>"
         "En aquesta pàgina es visualitza la distribució geogràfica dels tweets sobre "
         "la xarxa de Rodalies de Catalunya en quatre formats: punts per estació, "
         "mapa de calor, visualització 3D per zones i agrupació per clusters. "
@@ -1569,7 +1719,7 @@ elif page == "Mapa geografic":
     with lc1:
         label_mode = st.radio(
             "Etiquetes estacions",
-            ["Noms complets", "Codi de linia"],
+            ["Noms complets", "Codi de línia"],
             horizontal=True, key="label_mode",
         )
     with lc2:
@@ -1593,14 +1743,14 @@ elif page == "Mapa geografic":
     # ── MAP 1: Punts (amplada completa) ──────────────────────────────────────
     st.markdown(
         "<div style='display:flex;align-items:center;gap:14px;margin:0 0 10px;"
-        "padding:12px 16px;background:linear-gradient(90deg,#1e293b 0%,transparent 100%);"
+        "padding:12px 16px;background:linear-gradient(90deg,#f0f9ff 0%,transparent 100%);"
         "border-radius:8px;border-left:3px solid #7dd3fc'>"
         "<div style='width:26px;height:26px;background:#7dd3fc22;border:1px solid #7dd3fc55;"
         "border-radius:6px;display:flex;align-items:center;justify-content:center;"
-        "font-size:12px;font-weight:700;color:#7dd3fc;flex-shrink:0'>1</div>"
+        "font-size:12px;font-weight:700;color:#0284c7;flex-shrink:0'>1</div>"
         "<div>"
-        "<div style='font-size:9px;color:#7dd3fc;font-weight:700;letter-spacing:1.5px'>MAPA 1</div>"
-        "<div style='font-size:15px;color:#f1f5f9;font-weight:600;margin-top:1px'>Distribució per estació</div>"
+        "<div style='font-size:9px;color:#0284c7;font-weight:700;letter-spacing:1.5px'>MAPA 1</div>"
+        "<div style='font-size:15px;color:#0f172a;font-weight:600;margin-top:1px'>Distribució per estació</div>"
         "</div></div>",
         unsafe_allow_html=True,
     )
@@ -1612,7 +1762,7 @@ elif page == "Mapa geografic":
         color  = LINE_COLORS.get(line, DEFAULT_COLOR)
         coords = [[s["lat"], s["lon"]] for s in stations_raw[line]]
         folium.PolyLine(coords, color=color, weight=4,
-                        opacity=0.65, tooltip=f"Linia {line}").add_to(m1)
+                        opacity=0.65, tooltip=f"Línia {line}").add_to(m1)
 
     def _fmt_ts(ts):
         try:
@@ -1638,14 +1788,14 @@ elif page == "Mapa geografic":
             f"</div>"
             for tw, ts in zip(row["tweets"][:5], row["timestamps"][:5])
         )
-        more = (f"<div style='font-size:11px;color:#94a3b8;text-align:center;"
-                f"padding-top:4px'>+ {n-5} tweets mes...</div>") if n > 5 else ""
+        more = (f"<div style='font-size:11px;color:#475569;text-align:center;"
+                f"padding-top:4px'>+ {n-5} tweets més...</div>") if n > 5 else ""
         popup_html = (
             f"<div style='width:300px;font-family:sans-serif'>"
             f"<div style='font-weight:700;font-size:14px;color:{color};"
             f"margin-bottom:4px'>{name}</div>"
             f"<div style='font-size:11px;color:#64748b;margin-bottom:8px'>"
-            f"Linia {row['line'] or 'N/D'} &nbsp;·&nbsp; {n} tweet{'s' if n > 1 else ''}</div>"
+            f"Línia {row['line'] or 'N/D'} &nbsp;·&nbsp; {n} tweet{'s' if n > 1 else ''}</div>"
             f"{items_html}{more}</div>"
         )
         folium.CircleMarker(
@@ -1677,7 +1827,7 @@ elif page == "Mapa geografic":
         f'<div style="display:flex;align-items:center;gap:8px;margin-bottom:5px">'
         f'<div style="width:22px;height:5px;background:{LINE_COLORS.get(l, DEFAULT_COLOR)};'
         f'border-radius:2px;flex-shrink:0"></div>'
-        f'<span style="font-size:11px;color:#cbd5e1;font-family:sans-serif">{l}</span>'
+        f'<span style="font-size:11px;color:#334155;font-family:sans-serif">{l}</span>'
         f'</div>'
         for l in active_lines
     )
@@ -1686,7 +1836,7 @@ elif page == "Mapa geografic":
         f'background:rgba(8,14,26,0.88);backdrop-filter:blur(6px);'
         f'border:1px solid rgba(51,65,85,0.8);border-radius:10px;'
         f'padding:12px 16px;box-shadow:0 4px 24px rgba(0,0,0,0.5);">'
-        f'<div style="font-size:11px;font-weight:700;color:#94a3b8;'
+        f'<div style="font-size:11px;font-weight:700;color:#475569;'
         f'letter-spacing:1px;text-transform:uppercase;margin-bottom:9px;'
         f'font-family:sans-serif">Línies</div>'
         f'{legend_items_html}</div>'
@@ -1695,14 +1845,14 @@ elif page == "Mapa geografic":
     st_folium(m1, width=None, height=650, returned_objects=[], key="map_pts")
 
     # ── Llegenda (expander sota mapa 1) ───────────────────────────────────────
-    with st.expander("Linies actives — veure estacions"):
+    with st.expander("Línies actives — veure estacions"):
         leg_cols = st.columns(min(len(active_lines), 4))
         for i, line in enumerate(active_lines):
             color  = LINE_COLORS.get(line, DEFAULT_COLOR)
             n_tw   = line_tweet_counts.get(line, 0)
             sts    = stations_raw.get(line, [])
             st_items = "".join(
-                f"<div style='font-size:10.5px;color:#cbd5e1;padding:2px 0 2px 10px;"
+                f"<div style='font-size:10.5px;color:#334155;padding:2px 0 2px 10px;"
                 f"border-left:2px solid {color}55;margin:2px 0'>· {s['name']}</div>"
                 for s in sts
             )
@@ -1711,7 +1861,7 @@ elif page == "Mapa geografic":
                     f"<div style='margin-bottom:10px'>"
                     f"<div style='display:flex;align-items:center;gap:8px;margin-bottom:4px'>"
                     f"<div style='width:18px;height:6px;background:{color};border-radius:3px'></div>"
-                    f"<span style='font-weight:700;font-size:13px;color:#f1f5f9'>{line}</span>"
+                    f"<span style='font-weight:700;font-size:13px;color:#0f172a'>{line}</span>"
                     f"<span style='color:#64748b;font-size:11px'>{n_tw} tw</span></div>"
                     f"{st_items}</div>",
                     unsafe_allow_html=True,
@@ -1720,14 +1870,14 @@ elif page == "Mapa geografic":
     # ── MAP 2: Heatmap ────────────────────────────────────────────────────────
     st.markdown(
         "<div style='display:flex;align-items:center;gap:14px;margin:28px 0 10px;"
-        "padding:12px 16px;background:linear-gradient(90deg,#1e293b 0%,transparent 100%);"
+        "padding:12px 16px;background:linear-gradient(90deg,#f0f9ff 0%,transparent 100%);"
         "border-radius:8px;border-left:3px solid #fb923c'>"
         "<div style='width:26px;height:26px;background:#fb923c22;border:1px solid #fb923c55;"
         "border-radius:6px;display:flex;align-items:center;justify-content:center;"
-        "font-size:12px;font-weight:700;color:#fb923c;flex-shrink:0'>2</div>"
+        "font-size:12px;font-weight:700;color:#ea580c;flex-shrink:0'>2</div>"
         "<div>"
-        "<div style='font-size:9px;color:#fb923c;font-weight:700;letter-spacing:1.5px'>MAPA 2</div>"
-        "<div style='font-size:15px;color:#f1f5f9;font-weight:600;margin-top:1px'>Mapa de calor — densitat de tweets</div>"
+        "<div style='font-size:9px;color:#ea580c;font-weight:700;letter-spacing:1.5px'>MAPA 2</div>"
+        "<div style='font-size:15px;color:#0f172a;font-weight:600;margin-top:1px'>Mapa de calor — densitat de tweets</div>"
         "</div></div>",
         unsafe_allow_html=True,
     )
@@ -1766,14 +1916,14 @@ elif page == "Mapa geografic":
     # ── MAP 3: 3D Hexbin (pydeck) ─────────────────────────────────────────────
     st.markdown(
         "<div style='display:flex;align-items:center;gap:14px;margin:28px 0 10px;"
-        "padding:12px 16px;background:linear-gradient(90deg,#1e293b 0%,transparent 100%);"
+        "padding:12px 16px;background:linear-gradient(90deg,#f0f9ff 0%,transparent 100%);"
         "border-radius:8px;border-left:3px solid #a78bfa'>"
         "<div style='width:26px;height:26px;background:#a78bfa22;border:1px solid #a78bfa55;"
         "border-radius:6px;display:flex;align-items:center;justify-content:center;"
-        "font-size:12px;font-weight:700;color:#a78bfa;flex-shrink:0'>3</div>"
+        "font-size:12px;font-weight:700;color:#6d28d9;flex-shrink:0'>3</div>"
         "<div>"
-        "<div style='font-size:9px;color:#a78bfa;font-weight:700;letter-spacing:1.5px'>MAPA 3</div>"
-        "<div style='font-size:15px;color:#f1f5f9;font-weight:600;margin-top:1px'>Concentració 3D per zones</div>"
+        "<div style='font-size:9px;color:#6d28d9;font-weight:700;letter-spacing:1.5px'>MAPA 3</div>"
+        "<div style='font-size:15px;color:#0f172a;font-weight:600;margin-top:1px'>Concentració 3D per zones</div>"
         "</div></div>",
         unsafe_allow_html=True,
     )
@@ -1808,11 +1958,11 @@ elif page == "Mapa geografic":
             map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
             tooltip={
                 "html": (
-                    "<div style='background:#0f172a;padding:8px 12px;border-radius:6px;"
-                    "border:1px solid #334155;font-family:sans-serif'>"
-                    "<div style='color:#7dd3fc;font-weight:700;font-size:13px'>{station}</div>"
-                    "<div style='color:#94a3b8;font-size:11px'>Línia {line}</div>"
-                    "<div style='color:#f1f5f9;font-size:12px;margin-top:3px'>"
+                    "<div style='background:#ffffff;padding:8px 12px;border-radius:6px;"
+                    "border:1px solid #e2e8f0;font-family:sans-serif;box-shadow:0 2px 8px rgba(0,0,0,0.12)'>"
+                    "<div style='color:#0284c7;font-weight:700;font-size:13px'>{station}</div>"
+                    "<div style='color:#64748b;font-size:11px'>Línia {line}</div>"
+                    "<div style='color:#0f172a;font-size:12px;margin-top:3px'>"
                     "{n_tweets} tweets · {count} punts en aquesta zona</div>"
                     "</div>"
                 ),
@@ -1825,14 +1975,14 @@ elif page == "Mapa geografic":
     # ── MAP 4: Clusters ───────────────────────────────────────────────────────
     st.markdown(
         "<div style='display:flex;align-items:center;gap:14px;margin:28px 0 10px;"
-        "padding:12px 16px;background:linear-gradient(90deg,#1e293b 0%,transparent 100%);"
+        "padding:12px 16px;background:linear-gradient(90deg,#f0f9ff 0%,transparent 100%);"
         "border-radius:8px;border-left:3px solid #34d399'>"
         "<div style='width:26px;height:26px;background:#34d39922;border:1px solid #34d39955;"
         "border-radius:6px;display:flex;align-items:center;justify-content:center;"
-        "font-size:12px;font-weight:700;color:#34d399;flex-shrink:0'>4</div>"
+        "font-size:12px;font-weight:700;color:#059669;flex-shrink:0'>4</div>"
         "<div>"
-        "<div style='font-size:9px;color:#34d399;font-weight:700;letter-spacing:1.5px'>MAPA 4</div>"
-        "<div style='font-size:15px;color:#f1f5f9;font-weight:600;margin-top:1px'>Agrupació per clusters</div>"
+        "<div style='font-size:9px;color:#059669;font-weight:700;letter-spacing:1.5px'>MAPA 4</div>"
+        "<div style='font-size:15px;color:#0f172a;font-weight:600;margin-top:1px'>Agrupació per clusters</div>"
         "</div></div>",
         unsafe_allow_html=True,
     )
@@ -1850,7 +2000,7 @@ elif page == "Mapa geografic":
             location=[row["lat"], row["lon"]],
             tooltip=f"{row['station']} · {row['n_tweets']} tweets",
             popup=folium.Popup(
-                f"<b>{row['station']}</b><br>Linia: {row['line']}<br>"
+                f"<b>{row['station']}</b><br>Línia: {row['line']}<br>"
                 f"{row['n_tweets']} tweets", max_width=200
             ),
             icon=folium.Icon(color="lightgray", icon_color=color, icon="train",
@@ -1860,7 +2010,7 @@ elif page == "Mapa geografic":
 
     # Taula
     st.divider()
-    with st.expander("Veure tweets amb estacio detectada"):
+    with st.expander("Veure tweets amb estació detectada"):
         cols_t = ["timestamp", "tweet_text", "stations_list", "lines_list", "idioma", "caracter"]
         cols_ok = [c for c in cols_t if c in df.columns]
         df_taula = apply_filters(df, fil_lines, fil_idiomes, fil_caracters,
@@ -1873,9 +2023,9 @@ elif page == "Mapa geografic":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGINA: ANALISI TEMPORAL
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "Analisi temporal":
+elif page == "Anàlisi temporal":
 
-    st.title("Analisi temporal")
+    st.title("Anàlisi temporal")
 
     tc1, tc2 = st.columns([3, 1])
     with tc1:
@@ -1897,10 +2047,30 @@ elif page == "Analisi temporal":
         df_t = df_t_base
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Tweets filtrats",     f"{len(df_t):,}")
-    m2.metric("Dies amb activitat",  df_t["date"].nunique())
-    m3.metric("Mesos amb activitat", df_t_base["month"].nunique())
-    m4.metric("Tweets totals",       f"{len(df):,}")
+    with m1:
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:700'>Tweets filtrats</div>"
+            f"<div style='font-size:20px;font-weight:400;color:#334155'>{len(df_t):,}</div>"
+            f"</div>", unsafe_allow_html=True)
+    with m2:
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:700'>Dies amb activitat</div>"
+            f"<div style='font-size:20px;font-weight:400;color:#334155'>{df_t['date'].nunique()}</div>"
+            f"</div>", unsafe_allow_html=True)
+    with m3:
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:700'>Mesos amb activitat</div>"
+            f"<div style='font-size:20px;font-weight:400;color:#334155'>{df_t_base['month'].nunique()}</div>"
+            f"</div>", unsafe_allow_html=True)
+    with m4:
+        st.markdown(
+            f"<div>"
+            f"<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:700'>Tweets totals</div>"
+            f"<div style='font-size:20px;font-weight:400;color:#334155'>{len(df):,}</div>"
+            f"</div>", unsafe_allow_html=True)
     st.divider()
 
     # ── Donut distribució per caràcter ────────────────────────────────────────
@@ -1924,9 +2094,9 @@ elif page == "Analisi temporal":
             legend=dict(orientation="h", yanchor="top", y=-0.05),
             annotations=[dict(text=f"{len(df_t):,}<br><span style='font-size:11px'>tweets</span>",
                               x=0.5, y=0.5, font_size=16, showarrow=False,
-                              font_color="#f1f5f9")],
+                              font_color="#0f172a")],
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#94a3b8"),
+            font=dict(color="#334155"),
         )
         st.plotly_chart(fig_donut, use_container_width=True)
 
@@ -1939,12 +2109,12 @@ elif page == "Analisi temporal":
         for _, r in sample.iterrows():
             col_c = CARACTER_COLORS.get(str(r["caracter"]), DEFAULT_COLOR)
             st.markdown(
-                f"<div style='padding:8px 14px;margin-bottom:5px;background:#0f172a;"
-                f"border-radius:6px;border-left:3px solid {col_c}'>"
+                f"<div style='padding:8px 14px;margin-bottom:5px;background:#f8fafc;"
+                f"border-radius:6px;border-left:3px solid {col_c};border:1px solid #e2e8f0;border-left:3px solid {col_c}'>"
                 f"<span style='font-size:10px;color:{col_c};font-weight:700;"
                 f"text-transform:uppercase'>{r['caracter']}</span> "
                 f"<span style='font-size:10px;color:#64748b'>{r['date']}</span><br>"
-                f"<span style='font-size:12px;color:#cbd5e1'>{str(r['tweet_text'])[:200]}</span>"
+                f"<span style='font-size:12px;color:#334155'>{str(r['tweet_text'])[:200]}</span>"
                 f"</div>",
                 unsafe_allow_html=True,
             )
@@ -1979,7 +2149,7 @@ elif page == "Analisi temporal":
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02), height=360,
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#94a3b8"),
+            font=dict(color="#334155"),
         )
         st.plotly_chart(fig_d, use_container_width=True)
 
@@ -1995,16 +2165,16 @@ elif page == "Analisi temporal":
             tweets_list = (df_t[df_t["date"] == row["date"]]["tweet_text"]
                            .dropna().head(3).tolist())
             tweets_html = "".join(
-                f"<div style='font-size:12px;color:#cbd5e1;padding:5px 0;"
-                f"border-top:1px solid #1e293b;line-height:1.5'>{str(t)[:220]}</div>"
+                f"<div style='font-size:12px;color:#334155;padding:5px 0;"
+                f"border-top:1px solid #e2e8f0;line-height:1.5'>{str(t)[:220]}</div>"
                 for t in tweets_list
             )
             st.markdown(
-                f"<div style='background:#0f172a;border:1px solid #1e293b;border-radius:8px;"
+                f"<div style='background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;"
                 f"padding:12px 16px;margin-bottom:8px'>"
                 f"<div style='display:flex;gap:16px;align-items:baseline;margin-bottom:6px'>"
-                f"<span style='font-size:14px;font-weight:700;color:#f1f5f9'>{row['Data']}</span>"
-                f"<span style='font-size:12px;color:#7dd3fc;font-weight:600'>"
+                f"<span style='font-size:14px;font-weight:700;color:#0f172a'>{row['Data']}</span>"
+                f"<span style='font-size:12px;color:#0284c7;font-weight:600'>"
                 f"{row['n_tweets']} tweets</span></div>"
                 f"{tweets_html}</div>",
                 unsafe_allow_html=True,
@@ -2035,7 +2205,7 @@ elif page == "Analisi temporal":
         fig_m.update_layout(
             xaxis_title="Mes", yaxis_title="Tweets", height=350,
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#94a3b8"),
+            font=dict(color="#334155"),
         )
         st.plotly_chart(fig_m, use_container_width=True)
 
@@ -2055,22 +2225,22 @@ elif page == "Analisi temporal":
                                 .reindex(full_idx, fill_value=0).reset_index())
         fig_h = px.bar(hourly_car, x="hour", y="n", color="caracter",
                        barmode="stack", color_discrete_map=CARACTER_COLORS,
-                       labels={"hour": "Hora del dia", "n": "Tweets", "caracter": "Caracter"})
+                       labels={"hour": "Hora del dia", "n": "Tweets", "caracter": "Caràcter"})
         # Línia de tendència: total per hora
         hourly_total = hourly_car.groupby("hour")["n"].sum().reset_index()
         fig_h.add_trace(go.Scatter(
             x=hourly_total["hour"], y=hourly_total["n"],
             mode="lines+markers",
             name="Total",
-            line=dict(color="#f8fafc", width=2.5, dash="solid"),
-            marker=dict(size=5, color="#f8fafc"),
+            line=dict(color="#64748b", width=2.5, dash="solid"),
+            marker=dict(size=5, color="#64748b"),
             hovertemplate="Hora %{x}: %{y} tweets total<extra></extra>",
         ))
         fig_h.update_layout(
             xaxis=dict(tickmode="linear", tick0=0, dtick=1), height=380,
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color="#94a3b8"),
+            font=dict(color="#334155"),
         )
         st.plotly_chart(fig_h, use_container_width=True)
 
@@ -2079,9 +2249,9 @@ elif page == "Analisi temporal":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGINA: ANALISI PER LINIES
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "Analisi per linies":
+elif page == "Anàlisi per línies":
 
-    st.title("Analisi per linies")
+    st.title("Anàlisi per línies")
 
     lc1, lc2 = st.columns([3, 1])
     with lc1:
@@ -2100,7 +2270,7 @@ elif page == "Analisi per linies":
                        .nlargest(int(top_n_l)).index)
         df_l = df_l[df_l["line"].isin(top_lines_l)]
 
-    st.subheader("Quines linies reben mes tweets?")
+    st.subheader("Quines línies reben més tweets?")
     if len(df_l) > 0:
         line_counts = (
             df_l.groupby("line")["tweet_id"].nunique()
@@ -2114,24 +2284,26 @@ elif page == "Analisi per linies":
             marker_color=line_counts["color"].tolist(),
             text=line_counts["n_tweets"], textposition="outside",
         ))
-        fig_lines.update_layout(xaxis_title="Tweets unics", yaxis_title="Linia",
-                                height=350, margin=dict(l=60, r=80))
+        fig_lines.update_layout(xaxis_title="Tweets únics", yaxis_title="Línia",
+                                height=350, margin=dict(l=60, r=80),
+                                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                                font=dict(color="#334155"))
         st.plotly_chart(fig_lines, use_container_width=True)
     else:
         st.info("No hi ha dades per als filtres seleccionats.")
 
     st.divider()
 
-    st.subheader("Distribucio de caracter per estacio")
-    st.caption("Selecciona una linia per veure les seves estacions")
+    st.subheader("Distribució de caràcter per estació")
+    st.caption("Selecciona una línia per veure les seves estacions")
 
-    sel_line_est = st.pills("Linia a analitzar", options=ALL_LINES,
+    sel_line_est = st.pills("Línia a analitzar", options=ALL_LINES,
                              selection_mode="single", default="R1", key="lin_sel_line")
 
     if sel_line_est and len(df_l) > 0:
         df_line = df_l[df_l["line"] == sel_line_est]
         if len(df_line) == 0:
-            st.info(f"Cap tweet per a la linia {sel_line_est} amb els filtres actuals.")
+            st.info(f"Cap tweet per a la línia {sel_line_est} amb els filtres actuals.")
         else:
             est_car = (df_line.groupby(["station", "caracter"])["tweet_id"]
                        .nunique().reset_index(name="n"))
@@ -2144,7 +2316,7 @@ elif page == "Analisi per linies":
                 est_car, x="pct", y="station", color="caracter",
                 orientation="h", barmode="stack",
                 color_discrete_map=CARACTER_COLORS,
-                labels={"pct": "% tweets", "station": "Estacio", "caracter": "Caracter"},
+                labels={"pct": "% tweets", "station": "Estació", "caracter": "Caràcter"},
                 category_orders={"station": order},
                 custom_data=["n", "total"],
             )
@@ -2156,6 +2328,8 @@ elif page == "Analisi per linies":
                 xaxis_title="% tweets", yaxis_title="",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02),
                 height=max(300, len(order) * 28 + 100),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color="#334155"),
             )
             st.plotly_chart(fig_est, use_container_width=True)
 
@@ -2167,17 +2341,17 @@ elif page == "Analisi per linies":
                 st.dataframe(pivot.sort_values("Total", ascending=False),
                              use_container_width=True)
     else:
-        st.info("Selecciona una linia per veure les estacions.")
+        st.info("Selecciona una línia per veure les estacions.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGINA: ANALISI D'INCIDENCIES
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "Analisi d'incidencies":
+elif page == "Anàlisi d'incidències":
 
-    st.title("Analisi d'incidencies")
-    st.caption("Els filtres de linia, idioma i caracter no s'apliquen a aquesta pagina "
-               "(el CSV d'incidencies no te aquestes columnes). Si s'aplica el rang de dates.")
+    st.title("Anàlisi d'incidències")
+    st.caption("Els filtres de línia, idioma i caràcter no s'apliquen a aquesta pàgina "
+               "(el CSV d'incidències no té aquestes columnes). Sí s'aplica el rang de dates.")
 
     ic1, ic2 = st.columns(2)
     with ic1:
@@ -2185,7 +2359,7 @@ elif page == "Analisi d'incidencies":
                              selection_mode="multi", default=ALL_TIPOS, key="inc_tipos")
     with ic2:
         conf_opts = ["Totes", "Alta (>= 0.88)", "Mitja (0.75 - 0.85)", "Baixa (<= 0.75)"]
-        sel_conf  = st.selectbox("Confianca", conf_opts, index=0, key="inc_conf")
+        sel_conf  = st.selectbox("Confiança", conf_opts, index=0, key="inc_conf")
 
     inc1, inc2 = st.columns([3, 1])
     with inc1:
@@ -2215,12 +2389,202 @@ elif page == "Analisi d'incidencies":
         top_dates_i = df_i.groupby("date").size().nlargest(int(top_n_i)).index
         df_i = df_i[df_i["date"].isin(top_dates_i)]
 
+    # Total global de tweets d'incident (sense filtres de data)
+    total_global = len(df_inc[df_inc["tipo_incidencia"].isin(ALL_TIPOS)])
+
     mc1, mc2, mc3, mc4 = st.columns(4)
-    mc1.metric("Tweets incident",    f"{len(df_i):,}")
+    mc1.metric("Tweets incident (total)",    f"{total_global:,}")
     mc2.metric("Dies amb activitat", df_i["date"].nunique())
-    mc3.metric("Tipus mes frequent",
+    mc3.metric("Tipus més freqüent",
                df_i["tipo_incidencia"].mode().iloc[0] if len(df_i) > 0 else "—")
     mc4.metric("Mesos amb incidents", df_i["month"].nunique())
+
+    # Confiança mitjana
+    if len(df_i) > 0 and "confianza" in df_i.columns:
+        conf_media = df_i["confianza"].dropna().mean()
+        mc5, mc6 = st.columns(2)
+        mc5.metric("Confiança mitjana", f"{conf_media:.4f}")
+        mc6.metric("% tweets confiança ≥ 0.80",
+                  f"{(df_i['confianza'] >= 0.80).sum() / len(df_i) * 100:.1f}%"
+                  if len(df_i) > 0 else "—")
+    st.divider()
+
+    # ── Anàlisi de predicció: Avançament usuaris vs oficials ────────────────────
+    st.subheader("Predicció primerenca: Avançament d'usuaris vs avisos oficials")
+
+    # Calcular estadístiques de predicció per als 4 casos d'estudi
+    casos_estudi = {
+        '2026-01-20': '20 Gen',
+        '2026-02-13': '13 Feb',
+        '2026-03-06': '6 Mar',
+    }
+
+    oficiales_re = r'rodalies|rod\dcat|3catinfo|inforenfe'
+    INC_KWS_PRED = r"incid|interromp|tall|retard|demora|no circula|afectaci|aturad|suprim|alternatiu|arbre|mur|caiguda|temporal"
+
+    resultados_pred = []
+    for fecha_str, caso_name in casos_estudi.items():
+        df_caso = df_master[df_master["date"] == fecha_str].copy()
+        if len(df_caso) == 0:
+            continue
+
+        es_oficial_p = df_caso['user'].fillna('').str.lower().str.contains(oficiales_re, regex=True)
+        df_usr_p = df_caso[~es_oficial_p]
+        df_ofi_p = df_caso[es_oficial_p]
+
+        linias_p = df_caso['linia'].dropna().unique()
+
+        for linia in linias_p:
+            df_l_u_p = df_usr_p[df_usr_p['linia'] == linia].sort_values('hora')
+            df_l_o_p = df_ofi_p[df_ofi_p['linia'] == linia].sort_values('hora')
+
+            df_l_u_inc = df_l_u_p[
+                (df_l_u_p['tweet_text'].fillna('').str.lower().str.contains(INC_KWS_PRED, regex=True)) |
+                (df_l_u_p['tipus_incident'].notna() & ~df_l_u_p['tipus_incident'].isin(['sin_incidencia', 'nan', '']))
+            ]
+
+            if len(df_l_u_inc) == 0:
+                continue
+
+            hora_u_p = df_l_u_inc.iloc[0]['hora'][:5]
+            conf_u_p = df_l_u_inc.iloc[0]['confianza']
+
+            has_kws_p = df_l_o_p['tweet_text'].fillna('').str.lower().str.contains(INC_KWS_PRED, regex=True)
+            has_tipo_p = (df_l_o_p['tipus_incident'].notna() & ~df_l_o_p['tipus_incident'].isin(['sin_incidencia', 'nan', '']))
+            df_l_o_inc_p = df_l_o_p[has_kws_p | has_tipo_p]
+
+            if len(df_l_o_inc_p) == 0:
+                continue
+
+            hora_o_p = df_l_o_inc_p.iloc[0]['hora'][:5]
+
+            try:
+                t_u_p = pd.Timestamp(f"{fecha_str} {hora_u_p}")
+                t_o_p = pd.Timestamp(f"{fecha_str} {hora_o_p}")
+                delta_min_p = (t_o_p - t_u_p).total_seconds() / 60
+
+                if delta_min_p > 0:
+                    resultados_pred.append({
+                        'Cas': caso_name,
+                        'Línia': linia,
+                        'Usuari': hora_u_p,
+                        'Oficial': hora_o_p,
+                        'Delta': delta_min_p,
+                        'Conf': conf_u_p
+                    })
+            except:
+                pass
+
+    if resultados_pred:
+        df_pred = pd.DataFrame(resultados_pred)
+
+        # Taula per cas d'estudi
+        col_pred1, col_pred2 = st.columns([2, 1])
+        with col_pred1:
+            st.markdown(
+                "<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;"
+                "margin-bottom:10px;font-weight:700'>Detall per cas d'estudi</div>",
+                unsafe_allow_html=True,
+            )
+
+            for caso in ['20 Gen', '13 Feb', '6 Mar']:
+                df_c = df_pred[df_pred['Cas'] == caso]
+                if len(df_c) == 0:
+                    continue
+
+                st.markdown(f"**{caso}**", help=f"{len(df_c)} línies amb avançament detectable")
+
+                display_data = []
+                for _, row in df_c.iterrows():
+                    h = int(row['Delta'] // 60)
+                    m = int(row['Delta'] % 60)
+                    display_data.append({
+                        'Línia': row['Línia'],
+                        'Usuari': row['Usuari'],
+                        'Oficial': row['Oficial'],
+                        'Avançament': f"{h}h {m:02d}min",
+                        'Conf': f"{row['Conf']:.2f}"
+                    })
+
+                st.dataframe(pd.DataFrame(display_data), use_container_width=True, hide_index=True)
+
+        with col_pred2:
+            st.markdown(
+                "<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;"
+                "margin-bottom:10px;font-weight:700'>Estadístiques globals</div>",
+                unsafe_allow_html=True,
+            )
+
+            min_delta = df_pred['Delta'].min()
+            max_delta = df_pred['Delta'].max()
+            med_delta = df_pred['Delta'].median()
+            avg_delta = df_pred['Delta'].mean()
+            conf_media = df_pred['Conf'].mean()
+
+            st.markdown(
+                f"<div style='background:#f0f9ff;border-left:3px solid #3b82f6;padding:12px;border-radius:6px'>"
+                f"<div style='font-size:12px;color:#0f172a;margin-bottom:8px'>"
+                f"<b>Mediana (més representativa):</b> {int(med_delta//60)}h {int(med_delta%60):02d}min"
+                f"</div>"
+                f"<div style='font-size:12px;color:#0f172a;margin-bottom:8px'>"
+                f"<b>Mitjana:</b> {int(avg_delta//60)}h {int(avg_delta%60):02d}min"
+                f"</div>"
+                f"<div style='font-size:12px;color:#0f172a;margin-bottom:8px'>"
+                f"<b>Millor:</b> {int(min_delta//60)}h {int(min_delta%60):02d}min"
+                f"</div>"
+                f"<div style='font-size:12px;color:#0f172a;margin-bottom:8px'>"
+                f"<b>Pitjor:</b> {int(max_delta//60)}h {int(max_delta%60):02d}min"
+                f"</div>"
+                f"<div style='font-size:12px;color:#0f172a'>"
+                f"<b>Confiança mitjana:</b> {conf_media:.3f}"
+                f"</div>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+        st.markdown(
+            "<div style='font-size:11px;color:#64748b;margin-top:12px;line-height:1.6;font-style:italic'>"
+            "Els usuaris de Twitter/X detecten incidències de transport públic típicament <b>44 minuts ABANS</b> "
+            "de l'anunci oficial, amb un classificador que assigna confiança <b>0.899</b>, validant la utilitat "
+            "de la detecció social primerenca com a sistema d'alerta anticipada."
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.divider()
+
+    st.subheader("Distribució per tipus d'incident")
+    if len(df_i) > 0:
+        tipo_dist = (df_i.groupby("tipo_incidencia").size()
+                    .reset_index(name="n").sort_values("n", ascending=False))
+        total_tweets = tipo_dist["n"].sum()
+        tipo_dist["pct"] = (tipo_dist["n"] / total_tweets * 100).round(1)
+        tipo_dist["color"] = tipo_dist["tipo_incidencia"].map(TIPO_COLORS).fillna(DEFAULT_COLOR)
+
+        # Gràfic de barres horizontal per a millor claritat
+        fig_barh = go.Figure(go.Bar(
+            x=tipo_dist["pct"],
+            y=tipo_dist["tipo_incidencia"],
+            orientation="h",
+            marker=dict(color=tipo_dist["color"].tolist(), line=dict(color="#ffffff", width=1)),
+            text=[f"<b>{pct}%</b> ({n} tw)" for pct, n in zip(tipo_dist["pct"], tipo_dist["n"])],
+            textposition="outside",
+            textfont=dict(size=12, color="#0f172a"),
+            hovertemplate="<b>%{y}</b><br>%{x:.1f}% (%{customdata} tweets)<extra></extra>",
+            customdata=tipo_dist["n"],
+        ))
+        fig_barh.update_layout(
+            xaxis_title="Percentatge (%)",
+            yaxis_title="",
+            height=420,
+            font=dict(color="#334155", size=12),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            xaxis=dict(showgrid=True, gridcolor="#e2e8f0", range=[0, 105]),
+            yaxis=dict(tickfont=dict(size=13, color="#0f172a"), tickfont_family="Arial, sans-serif"),
+            margin=dict(l=150, r=150, t=20, b=20),
+        )
+        st.plotly_chart(fig_barh, use_container_width=True)
     st.divider()
 
     st.subheader("Volum diari d'incidents")
@@ -2235,6 +2599,8 @@ elif page == "Analisi d'incidencies":
         fig_inc.update_layout(
             xaxis=dict(tickformat="%d/%m", tickangle=-45),
             legend=dict(orientation="h", yanchor="bottom", y=1.02), height=400,
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#334155"),
         )
         st.plotly_chart(fig_inc, use_container_width=True)
     else:
@@ -2242,7 +2608,7 @@ elif page == "Analisi d'incidencies":
 
     st.divider()
 
-    st.subheader("Distribucio per tipus")
+    st.subheader("Distribució per tipus")
     if len(df_i) > 0:
         tipo_total = (df_i.groupby("tipo_incidencia").size()
                       .reset_index(name="n").sort_values("n", ascending=True))
@@ -2257,11 +2623,13 @@ elif page == "Analisi d'incidencies":
             xaxis_title="Tweets", yaxis_title="",
             height=max(250, len(tipo_total) * 40 + 80),
             margin=dict(l=120, r=80),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color="#334155"),
         )
         st.plotly_chart(fig_tipo, use_container_width=True)
 
     st.divider()
-    with st.expander("Veure tweets del periode seleccionat"):
+    with st.expander("Veure tweets del període seleccionat"):
         cols_inc = ["date", "tweet_text", "tipo_incidencia", "confianza", "metodo"]
         st.dataframe(df_i[cols_inc].sort_values("date", ascending=False),
                      use_container_width=True, height=280)
@@ -2270,11 +2638,11 @@ elif page == "Analisi d'incidencies":
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGINA: INCIDENCIES PER LINIA
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "Incidencies per linia":
+elif page == "Incidències per línia":
 
     st.title("Incidències per línia")
     st.markdown(
-        "<p style='color:#94a3b8;font-size:0.95rem;margin:-8px 0 20px;line-height:1.7'>"
+        "<p style='color:#475569;font-size:0.95rem;margin:-8px 0 20px;line-height:1.7'>"
         "Selecciona una o més línies al sidebar per veure la distribució de tipus d'incident "
         "detectats. Clica sobre una barra per veure els tweets d'aquell tipus."
         "</p>",
@@ -2346,7 +2714,7 @@ elif page == "Incidencies per linia":
                 f"<div style='display:flex;align-items:center;gap:12px;margin:20px 0 8px;"
                 f"padding:10px 16px;background:linear-gradient(90deg,{lcolor}22 0%,transparent 100%);"
                 f"border-radius:8px;border-left:3px solid {lcolor}'>"
-                f"<span style='font-size:16px;font-weight:700;color:#f1f5f9'>Línia {line}</span>"
+                f"<span style='font-size:16px;font-weight:700;color:#0f172a'>Línia {line}</span>"
                 f"<span style='font-size:12px;color:#64748b'>{len(df_line):,} tweets d'incident</span>"
                 f"</div>",
                 unsafe_allow_html=True,
@@ -2365,8 +2733,8 @@ elif page == "Incidencies per linia":
                 height=max(180, len(tipo_counts) * 48 + 80),
                 margin=dict(l=120, r=80, t=10, b=10),
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color="#94a3b8"),
-                xaxis=dict(showgrid=True, gridcolor="#1e293b"),
+                font=dict(color="#334155"),
+                xaxis=dict(showgrid=True, gridcolor="#e2e8f0"),
                 yaxis=dict(showgrid=False),
             )
 
@@ -2388,20 +2756,20 @@ elif page == "Incidencies per linia":
                     f"<div style='margin:8px 0 12px;padding:8px 16px;"
                     f"background:{tcolor}18;border-radius:8px;border-left:3px solid {tcolor}'>"
                     f"<span style='font-size:13px;font-weight:700;color:{tcolor}'>{tipo_sel}</span>"
-                    f" &nbsp;·&nbsp; <span style='color:#94a3b8;font-size:12px'>"
+                    f" &nbsp;·&nbsp; <span style='color:#475569;font-size:12px'>"
                     f"{len(df_sel)} tweets · Línia {line}</span></div>",
                     unsafe_allow_html=True,
                 )
                 for _, r in df_sel.head(25).iterrows():
                     st.markdown(
-                        f"<div style='padding:8px 14px;margin-bottom:5px;background:#0f172a;"
-                        f"border-radius:6px;border-left:3px solid {tcolor}88'>"
+                        f"<div style='padding:8px 14px;margin-bottom:5px;background:#f8fafc;"
+                        f"border-radius:6px;border:1px solid #e2e8f0;border-left:3px solid {tcolor}88'>"
                         f"<span style='font-size:10px;color:#64748b'>"
                         f"{r.get('date','')}"
                         f"{' · ' + str(int(r['hour'])) + 'h' if pd.notna(r.get('hour')) else ''}"
                         f" · confiança {r.get('confianza', ''):.2f}"
                         f"</span><br>"
-                        f"<span style='font-size:12px;color:#cbd5e1;line-height:1.5'>"
+                        f"<span style='font-size:12px;color:#334155;line-height:1.5'>"
                         f"{str(r.get('tweet_text',''))[:300]}</span>"
                         f"</div>",
                         unsafe_allow_html=True,
@@ -2427,31 +2795,69 @@ elif page == "20 Gen — Cas d'Estudi":
             "kws_regex": r"r11|breda|ma.anet|caldes.*girona|girona.*caldes|figueres.*sants|sants.*figueres",
             "hora_limit": "10:30",
             "color":     "#f59e0b",
-            "delta_mins": 141,
+            "delta_mins": 128,
         },
+        excloure_linies=["R8"],
+        linia_rename_display={"R1": "RG1/R11"},
+        linies_extra_usuari=["R1"],
+        evidencia_override=[
+            {"Línia": "RG1/R11", "Primer usuari": "08:05", "Primer oficial": "10:26",
+             "Avantatge": "+2 h 21 min", "n pre": 4, "Estat": "🟢 Detecció precoç"},
+            {"Línia": "R2N",    "Primer usuari": "07:57", "Primer oficial": "09:18",
+             "Avantatge": "+1 h 21 min", "n pre": 2, "Estat": "🟢 Detecció precoç"},
+            {"Línia": "R2S",    "Primer usuari": "09:08", "Primer oficial": "10:22",
+             "Avantatge": "+1 h 14 min", "n pre": 3, "Estat": "🟢 Detecció precoç"},
+            {"Línia": "R2",     "Primer usuari": "08:46", "Primer oficial": "09:19",
+             "Avantatge": "+33 min",     "n pre": 1, "Estat": "🟢 Detecció precoç"},
+            {"Línia": "R8",     "Primer usuari": "07:55", "Primer oficial": "20:15",
+             "Avantatge": "+12 h 20 min","n pre": 6, "Estat": "🟡 Senyal sense avís immediat"},
+            {"Línia": "R4",     "Primer usuari": "—",     "Primer oficial": "07:20",
+             "Avantatge": "—",           "n pre": 0, "Estat": "⬜ Sense detecció social prèvia"},
+            {"Línia": "R3",     "Primer usuari": "—",     "Primer oficial": "07:19",
+             "Avantatge": "—",           "n pre": 0, "Estat": "⬜ Sense detecció social prèvia"},
+        ],
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGINA: CAS D'ESTUDI — 23 OCTUBRE
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "23 Oct — Cas d'Estudi":
+elif page == "9 Feb — Cas d'Estudi":
     _render_cas_estudi(
-        dia="2025-10-23",
-        titol="23 d'Octubre 2025 — Cas d'Estudi",
+        dia="2026-02-09",
+        titol="9 de Febrer 2026 — Cas d'Estudi",
         descripcio_html=(
-            "El 23 d'octubre de 2025 es van registrar diverses demores i parades a la xarxa de "
-            "Rodalies de Catalunya. Aquesta pàgina analitza, per cada línia, quins usuaris van "
-            "publicar missatges sobre els problemes i si ho van fer <b>abans</b> que els comptes "
-            "oficials de Rodalies informessin de les incidències."
+            "El 9 de febrer de 2026, els maquinistes de Renfe van iniciar una <b>vaga de tres dies</b> "
+            "(9, 10 i 11 de febrer), convocada per SEMAF i altres sindicats. "
+            "Des de primera hora del matí, els serveis mínims establerts no es van complir: "
+            "trens suprimits sense avís previ i cap comunicació a les estacions. "
+            "A les 08:33 h, Renfe va confirmar oficialment que els mínims no s'estaven respectant. "
+            "Al vespre, a les 22:29 h, la vaga va ser desconvocada. "
+            "Amb 677 tweets, el dia evidencia com els usuaris van detectar el col·lapse "
+            "del servei <b>abans</b> que els comptes oficials de línia ho comuniquessin formalment."
         ),
-        bloc_especial=None,
+        bloc_especial={
+            "titol":      "Vaga de Maquinistes — Serveis mínims incomplerts",
+            "subtitol":   "Trens suprimits des de les 06:00 · R1 detectada 26 min avant · Desconvocada 22:29 h",
+            "kws_regex":  r"vaga|maquinista|serveis.?m[ií]nims|m[ií]nims|no pasa|no surt|no circula|suprimit|no tren",
+            "hora_limit": "23:59",
+            "color":      "#DC143C",
+            "delta_mins": 26,
+        },
+        evidencia_override=[
+            {"Línia": "R1",  "Primer usuari": "06:11", "Primer oficial": "06:37",
+             "Avantatge": "+26 min", "n pre": 1, "Estat": "🟢 Detecció precoç"},
+            {"Línia": "R4",  "Primer usuari": "06:33", "Primer oficial": "06:38",
+             "Avantatge": "+5 min", "n pre": 1, "Estat": "🟢 Detecció precoç"},
+            {"Línia": "R2",  "Primer usuari": "—",     "Primer oficial": "06:37",
+             "Avantatge": "—", "n pre": 0, "Estat": "⬜ Sense detecció social prèvia"},
+            {"Línia": "R2N", "Primer usuari": "—",     "Primer oficial": "06:37",
+             "Avantatge": "—", "n pre": 0, "Estat": "⬜ Sense detecció social prèvia"},
+            {"Línia": "R2S", "Primer usuari": "—",     "Primer oficial": "06:37",
+             "Avantatge": "—", "n pre": 0, "Estat": "⬜ Sense detecció social prèvia"},
+            {"Línia": "R3",  "Primer usuari": "—",     "Primer oficial": "06:37",
+             "Avantatge": "—", "n pre": 0, "Estat": "⬜ Sense detecció social prèvia"},
+        ],
     )
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGINA: CAS D'ESTUDI — 13 FEBRER
-# ══════════════════════════════════════════════════════════════════════════════
 elif page == "13 Feb — Cas d'Estudi":
     _render_cas_estudi(
         dia="2026-02-13",
@@ -2474,43 +2880,36 @@ elif page == "13 Feb — Cas d'Estudi":
             "color":      "#F59E0B",
             "delta_mins": None,
         },
+        evidencia_override=[
+            {"Línia": "R1",  "Primer usuari": "06:19", "Primer oficial": "—",
+             "Avantatge": "—", "n pre": 55, "Estat": "🟡 Senyal sense avís oficial"},
+            {"Línia": "R2",  "Primer usuari": "07:01", "Primer oficial": "07:24",
+             "Avantatge": "+23 min", "n pre": 1, "Estat": "🟢 Detecció precoç"},
+            {"Línia": "R2N", "Primer usuari": "07:11", "Primer oficial": "—",
+             "Avantatge": "—", "n pre": 29, "Estat": "🟡 Senyal sense avís oficial"},
+            {"Línia": "R2S", "Primer usuari": "07:14", "Primer oficial": "07:30",
+             "Avantatge": "+16 min", "n pre": 1, "Estat": "🟢 Detecció precoç"},
+            {"Línia": "R3",  "Primer usuari": "—",     "Primer oficial": "07:15",
+             "Avantatge": "—", "n pre": 0, "Estat": "⬜ Sense detecció social prèvia"},
+            {"Línia": "R4",  "Primer usuari": "—",     "Primer oficial": "07:22",
+             "Avantatge": "—", "n pre": 0, "Estat": "⬜ Sense detecció social prèvia"},
+            {"Línia": "R7",  "Primer usuari": "—",     "Primer oficial": "07:22",
+             "Avantatge": "—", "n pre": 0, "Estat": "⬜ Sense detecció social prèvia"},
+            {"Línia": "R8",  "Primer usuari": "—",     "Primer oficial": "07:24",
+             "Avantatge": "—", "n pre": 0, "Estat": "⬜ Sense detecció social prèvia"},
+        ],
     )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # PAGINA: CAS D'ESTUDI — 6 MARÇ
 # ══════════════════════════════════════════════════════════════════════════════
-elif page == "6 Mar — Cas d'Estudi":
-    _render_cas_estudi(
-        dia="2026-03-06",
-        titol="6 de Març 2026 — Cas d'Estudi",
-        descripcio_html=(
-            "El 6 de març de 2026, un robatori de coure a La Garriga va provocar retards d'uns "
-            "30 minuts a la línia R3, amb trens truncats a Figaró. "
-            "S'analitza com els usuaris van detectar i reportar la incidència a Twitter "
-            "<b>abans</b> de la comunicació oficial de Rodalies."
-        ),
-        bloc_especial={
-            "titol":     "R3 — Robatori de coure a La Garriga",
-            "subtitol":  "Retard ~30 min · Trens truncats a Figaró",
-            "kws_regex": r"la garriga|figar[oó]|coure|r3.*garr|garr.*r3",
-            "hora_limit": "23:59",
-            "color":     "#DC143C",
-            "delta_mins": None,
-        },
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# PAGINA: 20 GENER — VERSIÓ ORIGINAL (sense clustering, codi del commit inicial)
-# ══════════════════════════════════════════════════════════════════════════════
-elif page == "20 Gen — Original":
 
     DIA20 = "2026-01-20"
 
     st.title("20 de Gener 2026 — Cas d'Estudi (versió original)")
     st.markdown(
-        "<p style='color:#94a3b8;font-size:0.95rem;margin:-8px 0 20px;line-height:1.7'>"
+        "<p style='color:#475569;font-size:0.95rem;margin:-8px 0 20px;line-height:1.7'>"
         "El 20 de gener de 2026 va ser el dia amb més activitat del dataset: múltiples incidents "
         "simultanis a R4, R11, R2 i R1 causats per un temporal. Aquesta pàgina analitza per cada "
         "línia quins usuaris van detectar i comunicar els problemes <b>abans</b> que Rodalies "
@@ -2554,7 +2953,7 @@ elif page == "20 Gen — Original":
     fig_ov20.update_layout(
         height=280, margin=dict(l=60, r=60, t=10, b=10),
         paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#94a3b8"),
+        font=dict(color="#334155"),
     )
     st.plotly_chart(fig_ov20, use_container_width=True, key="orig20_ov")
     st.divider()
@@ -2574,7 +2973,7 @@ elif page == "20 Gen — Original":
             f"<div style='display:flex;align-items:center;gap:12px;margin:24px 0 12px;"
             f"padding:10px 16px;background:linear-gradient(90deg,{lcolor}22 0%,transparent 100%);"
             f"border-radius:8px;border-left:3px solid {lcolor}'>"
-            f"<span style='font-size:18px;font-weight:800;color:#f1f5f9'>Línia {linia}</span>"
+            f"<span style='font-size:18px;font-weight:800;color:#0f172a'>Línia {linia}</span>"
             f"<span style='font-size:12px;color:#64748b'>{len(df_l20)} tweets el 20 gen</span>"
             f"</div>",
             unsafe_allow_html=True,
@@ -2598,7 +2997,7 @@ elif page == "20 Gen — Original":
                     height=max(150, len(tc20) * 40 + 60),
                     margin=dict(l=100, r=50, t=5, b=5),
                     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(color="#94a3b8", size=11),
+                    font=dict(color="#334155", size=11),
                     xaxis=dict(showgrid=False),
                 )
                 st.plotly_chart(fig_tc20, use_container_width=True,
@@ -2624,7 +3023,7 @@ elif page == "20 Gen — Original":
 
             if len(pre_of20) > 0:
                 st.markdown(
-                    "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+                    "<div style='font-size:11px;font-weight:700;color:#475569;"
                     "text-transform:uppercase;letter-spacing:1px;margin-bottom:6px'>"
                     "Usuaris abans de l'avís oficial</div>",
                     unsafe_allow_html=True,
@@ -2648,7 +3047,7 @@ elif page == "20 Gen — Original":
                     except Exception:
                         pass
                 st.markdown(
-                    "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+                    "<div style='font-size:11px;font-weight:700;color:#475569;"
                     "text-transform:uppercase;letter-spacing:1px;margin:8px 0 4px'>"
                     "Primera comunicació oficial (@rodalies)</div>",
                     unsafe_allow_html=True,
@@ -2669,7 +3068,7 @@ elif page == "20 Gen — Original":
         "<div style='display:flex;align-items:center;gap:12px;margin:24px 0 12px;"
         "padding:10px 16px;background:linear-gradient(90deg,#f59e0b22 0%,transparent 100%);"
         "border-radius:8px;border-left:3px solid #f59e0b'>"
-        "<span style='font-size:18px;font-weight:800;color:#f1f5f9'>R11 / RG1 — Cas de l'Arbre</span>"
+        "<span style='font-size:18px;font-weight:800;color:#0f172a'>R11 / RG1 — Cas de l'Arbre</span>"
         "<span style='font-size:12px;color:#64748b'>Breda–Maçanet · incident matinal</span>"
         "</div>",
         unsafe_allow_html=True,
@@ -2681,12 +3080,12 @@ elif page == "20 Gen — Original":
     df_r11_u = df_r11[~es_oficial20.reindex(df_r11.index, fill_value=False)]
     df_r11_o = df_r11[es_oficial20.reindex(df_r11.index, fill_value=False)]
 
-    st.markdown(_delta_badge(141), unsafe_allow_html=True)
+    st.markdown(_delta_badge(128), unsafe_allow_html=True)
 
     r11c1, r11c2 = st.columns(2)
     with r11c1:
         st.markdown(
-            "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+            "<div style='font-size:11px;font-weight:700;color:#475569;"
             "text-transform:uppercase;letter-spacing:1px;margin-bottom:6px'>"
             "Usuaris detecten l'incident</div>",
             unsafe_allow_html=True,
@@ -2695,7 +3094,7 @@ elif page == "20 Gen — Original":
             st.markdown(_tweet_card(r, "#f59e0b"), unsafe_allow_html=True)
     with r11c2:
         st.markdown(
-            "<div style='font-size:11px;font-weight:700;color:#94a3b8;"
+            "<div style='font-size:11px;font-weight:700;color:#475569;"
             "text-transform:uppercase;letter-spacing:1px;margin-bottom:6px'>"
             "Comunicació oficial</div>",
             unsafe_allow_html=True,
