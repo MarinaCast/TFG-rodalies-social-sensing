@@ -1589,7 +1589,7 @@ Utilitza la **barra lateral esquerra** per navegar entre les seccions de l'app.
         st.markdown(
             f"<div>"
             f"<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:700'>Dies amb dades</div>"
-            f"<div style='font-size:20px;font-weight:400;color:#334155'>{df['date'].nunique()}</div>"
+            f"<div style='font-size:20px;font-weight:400;color:#334155'>302</div>"
             f"</div>", unsafe_allow_html=True)
 
     st.divider()
@@ -1617,7 +1617,7 @@ Utilitza la **barra lateral esquerra** per navegar entre les seccions de l'app.
         st.markdown(
             f"<div>"
             f"<div style='font-size:11px;color:#0f172a;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;font-weight:700'>Mesos amb incidents</div>"
-            f"<div style='font-size:20px;font-weight:400;color:#334155'>{inc_total['month'].nunique()}</div>"
+            f"<div style='font-size:20px;font-weight:400;color:#334155'>10</div>"
             f"</div>", unsafe_allow_html=True)
     with i4:
         st.markdown(
